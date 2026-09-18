@@ -6,6 +6,27 @@
 
 import { ScanResultItem } from '../types';
 import { stringSimilarity, sanitizeName } from './fuzzyMatching';
+import {
+  getEffectiveApiBaseUrl,
+  getCustomApiKey
+} from './backgroundJobApi';
+
+function buildVisionUrl(endpoint: string): string {
+  const base = getEffectiveApiBaseUrl();
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return base ? `${base}${cleanEndpoint}` : cleanEndpoint;
+}
+
+function getVisionHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const key = getCustomApiKey();
+  if (key) {
+    headers['x-gemini-key'] = key;
+  }
+  return headers;
+}
 
 function normalizeClanName(str: string): string {
   return sanitizeName(str || '').toLowerCase().replace(/[\s_\-.]+/g, '');
@@ -53,10 +74,12 @@ export interface ApiDetectedDonation {
  */
 export async function checkGeminiVisionHealth(): Promise<{ available: boolean; provider?: string }> {
   try {
-    const res = await fetch('/api/health');
+    const res = await fetch(buildVisionUrl('/api/health'), {
+      headers: getVisionHeaders(),
+    });
     if (!res.ok) return { available: false };
     const data = await res.json();
-    return { available: data.status === 'ok', provider: data.provider };
+    return { available: data.status === 'ok', provider: data.provider || data.engine };
   } catch {
     return { available: false };
   }
@@ -71,9 +94,9 @@ export async function fetchAnalyzeFrameWithRetry(
 ): Promise<{ success: boolean; items: ApiDetectedDonation[]; error?: string }> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch('/api/analyze-frame', {
+      const res = await fetch(buildVisionUrl('/api/analyze-frame'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getVisionHeaders(),
         body: JSON.stringify(payload),
       });
 
@@ -111,9 +134,9 @@ export async function fetchDoubleScanVerify(
 ): Promise<{ success: boolean; items: ApiDetectedDonation[]; error?: string }> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch('/api/verify-double-scan', {
+      const res = await fetch(buildVisionUrl('/api/verify-double-scan'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getVisionHeaders(),
         body: JSON.stringify(payload),
       });
 
@@ -873,17 +896,30 @@ export async function extractFramesFromVideo(
     await seekTo(timeSec);
     await new Promise((r) => setTimeout(r, 40));
 
-    const videoWidth = videoElement.videoWidth || 1280;
-    const videoHeight = videoElement.videoHeight || 720;
-    offscreenCanvas.width = videoWidth;
-    offscreenCanvas.height = videoHeight;
+    const rawWidth = videoElement.videoWidth || 1280;
+    const rawHeight = videoElement.videoHeight || 720;
+    const maxDim = 960;
+    let targetW = rawWidth;
+    let targetH = rawHeight;
+    if (targetW > maxDim || targetH > maxDim) {
+      if (targetW > targetH) {
+        targetH = Math.round((rawHeight * maxDim) / rawWidth);
+        targetW = maxDim;
+      } else {
+        targetW = Math.round((rawWidth * maxDim) / rawHeight);
+        targetH = maxDim;
+      }
+    }
+
+    offscreenCanvas.width = targetW;
+    offscreenCanvas.height = targetH;
 
     if (ctx) {
-      ctx.drawImage(videoElement, 0, 0, videoWidth, videoHeight);
+      ctx.drawImage(videoElement, 0, 0, targetW, targetH);
     }
 
     const mimeType = 'image/jpeg';
-    const frameDataUrl = offscreenCanvas.toDataURL(mimeType, 0.85);
+    const frameDataUrl = offscreenCanvas.toDataURL(mimeType, 0.78);
     const base64 = frameDataUrl.includes(',') ? frameDataUrl.split(',')[1] : frameDataUrl;
 
     frames.push({
@@ -902,20 +938,56 @@ export async function extractFramesFromVideo(
 export async function extractFrameFromImage(
   file: File
 ): Promise<{ image: string; mimeType: string; previewThumbnail?: string }> {
-  const mimeType = file.type || 'image/jpeg';
-  const arrayBuf = await file.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuf);
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64 = btoa(binary);
+  const mimeType = 'image/jpeg';
+  const img = new Image();
+  const url = URL.createObjectURL(file);
 
-  return {
-    image: base64,
-    mimeType,
-    previewThumbnail: `data:${mimeType};base64,${base64}`,
-  };
+  return new Promise((resolve) => {
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const maxDim = 1200;
+      let targetW = img.naturalWidth || 1280;
+      let targetH = img.naturalHeight || 720;
+      if (targetW > maxDim || targetH > maxDim) {
+        if (targetW > targetH) {
+          targetH = Math.round((targetH * maxDim) / targetW);
+          targetW = maxDim;
+        } else {
+          targetW = Math.round((targetW * maxDim) / targetH);
+          targetH = maxDim;
+        }
+      }
+      canvas.width = targetW;
+      canvas.height = targetH;
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+      }
+      const dataUrl = canvas.toDataURL(mimeType, 0.82);
+      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+      resolve({
+        image: base64,
+        mimeType,
+        previewThumbnail: dataUrl,
+      });
+    };
+    img.onerror = async () => {
+      URL.revokeObjectURL(url);
+      const arrayBuf = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuf);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+      resolve({
+        image: base64,
+        mimeType: file.type || 'image/jpeg',
+        previewThumbnail: `data:${file.type || 'image/jpeg'};base64,${base64}`,
+      });
+    };
+    img.src = url;
+  });
 }
 

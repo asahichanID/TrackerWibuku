@@ -67,6 +67,8 @@ export interface AppSettings {
   targetDonation: number; // e.g. 5000000
   currencySymbol: string; // e.g. "Rp"
   canvasTheme: 'anime-sky' | 'sakura' | 'night-sky' | 'clean-white';
+  customBackendUrl?: string; // Deno Deploy or custom URL e.g. https://xxx.deno.dev
+  geminiApiKey?: string;
 }
 
 export type JobStatus = 'queued' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';

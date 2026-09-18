@@ -1,8 +1,14 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { useDatabase } from '../context/DatabaseContext';
 import { ActiveTab } from '../types';
 import { formatCurrency } from '../utils/fuzzyMatching';
+import { DENO_SERVER_CODE } from '../data/denoCode';
+import {
+  BACKEND_STORAGE_KEY,
+  API_KEY_STORAGE_KEY,
+  testBackendConnection
+} from '../utils/backgroundJobApi';
 import {
   Settings as SettingsIcon,
   Heart,
@@ -17,7 +23,14 @@ import {
   Sliders,
   Users,
   Database,
-  Info
+  Info,
+  Server,
+  Code2,
+  Copy,
+  ExternalLink,
+  Zap,
+  Activity,
+  AlertTriangle
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -44,6 +57,17 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol || '💎');
   const [minConfidence, setMinConfidence] = useState(settings.minConfidence || 50);
 
+  // Custom Deno Backend State
+  const [customBackendUrl, setCustomBackendUrl] = useState(() => {
+    return localStorage.getItem(BACKEND_STORAGE_KEY) || settings.customBackendUrl || '';
+  });
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    return localStorage.getItem(API_KEY_STORAGE_KEY) || settings.geminiApiKey || '';
+  });
+  const [testStatus, setTestStatus] = useState<{ testing: boolean; result?: { ok: boolean; message: string; details?: any } }>({ testing: false });
+  const [copiedDenoCode, setCopiedDenoCode] = useState(false);
+  const [showDenoCodeModal, setShowDenoCodeModal] = useState(false);
+
   // Manual Add Form
   const [manualName, setManualName] = useState('');
   const [manualNominal, setManualNominal] = useState('');
@@ -58,6 +82,22 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   // Save Settings
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const cleanBackendUrl = customBackendUrl.trim().replace(/\/+$/, '');
+    const cleanApiKey = geminiApiKey.trim();
+
+    if (cleanBackendUrl) {
+      localStorage.setItem(BACKEND_STORAGE_KEY, cleanBackendUrl);
+    } else {
+      localStorage.removeItem(BACKEND_STORAGE_KEY);
+    }
+
+    if (cleanApiKey) {
+      localStorage.setItem(API_KEY_STORAGE_KEY, cleanApiKey);
+    } else {
+      localStorage.removeItem(API_KEY_STORAGE_KEY);
+    }
+
     updateSettings({
       clanName: clanName.trim() || 'CLAN WIBU',
       reportTitle: reportTitle.trim() || 'LAPORAN DONASI',
@@ -65,10 +105,24 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
       targetDonation: Math.max(0, targetDonation),
       currencySymbol: currencySymbol.trim() || 'Rp',
       minConfidence,
+      customBackendUrl: cleanBackendUrl,
+      geminiApiKey: cleanApiKey,
     });
 
     setSaveSuccessMsg(true);
     setTimeout(() => setSaveSuccessMsg(false), 3000);
+  };
+
+  const handleTestBackend = async () => {
+    setTestStatus({ testing: true });
+    const res = await testBackendConnection(customBackendUrl.trim(), geminiApiKey.trim());
+    setTestStatus({ testing: false, result: res });
+  };
+
+  const handleCopyDenoCode = () => {
+    navigator.clipboard.writeText(DENO_SERVER_CODE);
+    setCopiedDenoCode(true);
+    setTimeout(() => setCopiedDenoCode(false), 3000);
   };
 
   // Add Manual Member
@@ -268,6 +322,94 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           </div>
         </div>
 
+        {/* Custom Deno / Backend API Section */}
+        <div className="pt-5 border-t border-slate-100 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Server className="w-4 h-4 text-indigo-600" />
+              <h4 className="font-bold text-sm text-slate-800">
+                Koneksi Backend Realtime (Deno Deploy / Deno Playground)
+              </h4>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowDenoCodeModal(true)}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs border border-indigo-200 transition-colors"
+            >
+              <Code2 className="w-3.5 h-3.5" />
+              <span>Lihat &amp; Salin Kode Deno</span>
+            </button>
+          </div>
+
+          <p className="text-xs text-slate-500 leading-relaxed">
+            Jika ingin memproses video donasi di server terpisah (Deno Deploy / Deno Playground), masukkan URL endpoint server Deno Anda di bawah ini:
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="font-semibold text-slate-700 block mb-1.5 text-xs">
+                Custom Deno Backend URL (Opsional)
+              </label>
+              <input
+                type="url"
+                placeholder="https://contoh-clan-wibu.deno.dev"
+                value={customBackendUrl}
+                onChange={(e) => setCustomBackendUrl(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-indigo-500 font-mono text-slate-800 text-xs"
+              />
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Biarkan kosong jika menggunakan server internal bawaan aplikasi.
+              </span>
+            </div>
+
+            <div>
+              <label className="font-semibold text-slate-700 block mb-1.5 text-xs">
+                Gemini API Key (Opsional untuk Deno)
+              </label>
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                value={geminiApiKey}
+                onChange={(e) => setGeminiApiKey(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-indigo-500 font-mono text-slate-800 text-xs"
+              />
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Dikirim via header <code>x-gemini-key</code> ke server Deno.
+              </span>
+            </div>
+          </div>
+
+          {/* Test Connection Button & Result */}
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={handleTestBackend}
+              disabled={testStatus.testing}
+              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-colors disabled:opacity-50"
+            >
+              <Activity className={`w-3.5 h-3.5 ${testStatus.testing ? 'animate-spin' : ''}`} />
+              <span>{testStatus.testing ? 'Menguji Koneksi...' : 'Tes Koneksi Backend'}</span>
+            </button>
+
+            {testStatus.result && (
+              <div
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 ${
+                  testStatus.result.ok
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border border-rose-200'
+                }`}
+              >
+                {testStatus.result.ok ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                )}
+                <span>{testStatus.result.message}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Save Button */}
         <div className="flex items-center justify-between pt-3 border-t border-slate-100">
           {saveSuccessMsg ? (
@@ -289,6 +431,97 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           </button>
         </div>
       </form>
+
+      {/* Deno Deploy / Playground Code Modal */}
+      {showDenoCodeModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-in max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2">
+                <Code2 className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-extrabold text-base text-slate-900">
+                  Kode Backend Standalone Deno Playground &amp; Deploy
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDenoCodeModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Quick Steps */}
+            <div className="bg-indigo-50/80 border border-indigo-200 rounded-xl p-3.5 text-xs text-indigo-950 space-y-1.5">
+              <span className="font-bold block text-indigo-900">🚀 4 Langkah Menjalankan di Deno:</span>
+              <ol className="list-decimal list-inside space-y-1 text-indigo-900 font-medium">
+                <li>
+                  Buka{' '}
+                  <a
+                    href="https://play.deno.land"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-bold underline text-indigo-700 inline-flex items-center gap-0.5"
+                  >
+                    play.deno.land <ExternalLink className="w-3 h-3" />
+                  </a>{' '}
+                  atau{' '}
+                  <a
+                    href="https://dash.deno.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-bold underline text-indigo-700 inline-flex items-center gap-0.5"
+                  >
+                    dash.deno.com <ExternalLink className="w-3 h-3" />
+                  </a>.
+                </li>
+                <li>Klik tombol <strong>"Salin Kode Deno (main.ts)"</strong> di bawah, lalu paste ke editor Deno.</li>
+                <li>Deploy / Run project Deno Anda untuk mendapatkan URL publik (misal <code>https://clan-api.deno.dev</code>).</li>
+                <li>Salin link tersebut dan tempelkan ke kolom <strong>"Custom Deno Backend URL"</strong> di atas.</li>
+              </ol>
+            </div>
+
+            {/* Code Block Container */}
+            <div className="relative flex-1 min-h-0 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-4 py-2 bg-slate-800/80 border-b border-slate-700 text-xs text-slate-300">
+                <span className="font-mono">main.ts (Deno Server)</span>
+                <button
+                  type="button"
+                  onClick={handleCopyDenoCode}
+                  className="inline-flex items-center space-x-1 px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-colors"
+                >
+                  {copiedDenoCode ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Tersalin!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Salin Semua Kode</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <pre className="p-4 overflow-y-auto text-[11px] font-mono text-slate-200 leading-relaxed whitespace-pre select-all">
+                {DENO_SERVER_CODE}
+              </pre>
+            </div>
+
+            <div className="pt-2 flex items-center justify-between">
+              <span className="text-xs text-slate-400">0 Dependensi eksternal, langsung jalan natively di Deno.</span>
+              <button
+                type="button"
+                onClick={() => setShowDenoCodeModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Manual Member Input Form */}
       <form onSubmit={handleAddManual} className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
