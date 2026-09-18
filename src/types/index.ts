@@ -69,4 +69,36 @@ export interface AppSettings {
   canvasTheme: 'anime-sky' | 'sakura' | 'night-sky' | 'clean-white';
 }
 
+export type JobStatus = 'queued' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';
+
+export interface BackgroundJobProgress {
+  percent: number;
+  currentFrame: number;
+  totalFrames: number;
+  message: string;
+  detectedCount: number;
+  passNumber?: 1 | 2;
+  timeElapsedSec: number;
+}
+
+export interface BackgroundJob {
+  id: string;
+  fileName: string;
+  fileType: 'video' | 'image';
+  status: JobStatus;
+  progress: BackgroundJobProgress;
+  totalFrames: number;
+  options: {
+    minConfidence?: number;
+    enableDualPass?: boolean;
+    existingMemberNames?: string[];
+  };
+  resultItems: ScanResultItem[];
+  previewThumbnail?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
 export type ActiveTab = 'dashboard' | 'upload' | 'leaderboard' | 'history' | 'export' | 'settings';

@@ -1,6 +1,7 @@
 import React from 'react';
 import { ActiveTab } from '../types';
 import { useDatabase } from '../context/DatabaseContext';
+import { useBackgroundJobs } from '../context/BackgroundJobContext';
 import {
   LayoutDashboard,
   UploadCloud,
@@ -9,7 +10,10 @@ import {
   FileImage,
   Settings as SettingsIcon,
   Sparkles,
-  Users
+  Users,
+  Activity,
+  CheckCircle2,
+  Clock
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -32,10 +36,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   isScanning = false,
 }) => {
   const { stats, settings } = useDatabase();
+  const { activeJobs, completedJobs, latestActiveJob, setIsJobModalOpen } = useBackgroundJobs();
 
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'upload', label: 'Upload File', icon: UploadCloud, badge: isScanning ? 'OCR Aktif' : undefined },
+    { id: 'upload', label: 'Upload File', icon: UploadCloud, badge: isScanning || activeJobs.length > 0 ? 'Aktif' : undefined },
     { id: 'leaderboard', label: 'Leaderboard', icon: Trophy, count: stats.totalMembers },
     { id: 'history', label: 'History', icon: HistoryIcon },
     { id: 'export', label: 'Canvas Report', icon: FileImage },
@@ -106,17 +111,51 @@ export const Navbar: React.FC<NavbarProps> = ({
             })}
           </nav>
 
-          {/* Right Status Badge */}
+          {/* Right Action & Background Process Button */}
           <div className="flex items-center space-x-2">
+            {/* Riwayat Proses / Background Task Button */}
+            <button
+              onClick={() => setIsJobModalOpen(true)}
+              id="open-job-history-btn"
+              className={`relative inline-flex items-center space-x-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs ${
+                activeJobs.length > 0
+                  ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100'
+                  : completedJobs.length > 0
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                  : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-sky-600'
+              }`}
+              title="Lihat riwayat antrean proses server"
+            >
+              {activeJobs.length > 0 ? (
+                <>
+                  <Activity className="w-3.5 h-3.5 text-amber-600 animate-spin" />
+                  <span>Proses ({latestActiveJob?.progress?.percent || 0}%)</span>
+                  <span className="flex h-2 w-2 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+                  </span>
+                </>
+              ) : completedJobs.length > 0 ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Riwayat Proses</span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-emerald-200 text-emerald-900 font-mono text-[10px]">
+                    {completedJobs.length}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Clock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Riwayat Proses</span>
+                </>
+              )}
+            </button>
+
             <div className="hidden lg:flex items-center space-x-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs text-slate-600">
               <Users className="w-3.5 h-3.5 text-sky-600" />
               <span>
                 <strong className="font-bold text-slate-900">{stats.donatedCount}</strong>/{stats.totalMembers} Donatur
               </span>
-            </div>
-            <div className="flex items-center space-x-1.5 px-2.5 py-1 bg-sky-50 border border-sky-100 rounded-lg text-xs font-semibold text-sky-700">
-              <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-              <span className="hidden sm:inline">2D Anime Engine</span>
             </div>
           </div>
         </div>
@@ -152,3 +191,4 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
+

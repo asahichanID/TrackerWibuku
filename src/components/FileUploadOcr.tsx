@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
 import { useDatabase } from '../context/DatabaseContext';
+import { useBackgroundJobs } from '../context/BackgroundJobContext';
 import { ActiveTab, ScanResultItem } from '../types';
-import { formatCurrency } from '../utils/fuzzyMatching';
+import { formatCurrency, formatIndonesianDateTime } from '../utils/fuzzyMatching';
 import {
   detectFileType,
   OcrProgressInfo,
@@ -12,7 +13,9 @@ import {
 import {
   analyzeImageWithGemini,
   analyzeVideoWithGemini,
-  checkGeminiVisionHealth
+  checkGeminiVisionHealth,
+  extractFramesFromVideo,
+  extractFrameFromImage
 } from '../utils/aiVisionEngine';
 import {
   cacheFileIntoProject,
@@ -56,7 +59,9 @@ import {
   FileCheck,
   Activity,
   Layers,
-  RefreshCw
+  RefreshCw,
+  Clock,
+  ArrowRight
 } from 'lucide-react';
 
 interface FileUploadOcrProps {
@@ -66,11 +71,24 @@ interface FileUploadOcrProps {
 
 export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) => {
   const { members, saveScanResults, settings } = useDatabase();
+  const {
+    selectedJobForReview,
+    clearJobForReview,
+    startJob,
+    activeJobs,
+    latestActiveJob,
+    setIsJobModalOpen,
+  } = useBackgroundJobs();
 
   // File State
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [fileType, setFileType] = useState<'video' | 'image' | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
+
+  // Background dispatch state
+  const [isPreparingBackground, setIsPreparingBackground] = useState(false);
+  const [backgroundPrepMessage, setBackgroundPrepMessage] = useState('');
+  const [dispatchedJobId, setDispatchedJobId] = useState<string | null>(null);
 
   // Project Media Cache State
   const [isCaching, setIsCaching] = useState(false);
@@ -130,6 +148,25 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Auto load selected job from Background Tasks into Review table
+  useEffect(() => {
+    if (selectedJobForReview && selectedJobForReview.resultItems) {
+      setScanItems(selectedJobForReview.resultItems);
+      setSelectedItemIds(new Set(selectedJobForReview.resultItems.map((i) => i.id)));
+      setHasScanned(true);
+      setFileType(selectedJobForReview.fileType);
+      setIsProcessing(false);
+      if (selectedJobForReview.previewThumbnail) {
+        setFileUrl(selectedJobForReview.previewThumbnail);
+      }
+      setUploadedFile(
+        new File([''], selectedJobForReview.fileName, {
+          type: selectedJobForReview.fileType === 'video' ? 'video/mp4' : 'image/jpeg',
+        })
+      );
+    }
+  }, [selectedJobForReview]);
 
   // Check Gemini Vision health and existing cache on mount
   useEffect(() => {
@@ -243,7 +280,68 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
     }
   };
 
-  // Start Unified OCR Scanning
+  // Start Background Server OCR (Can close browser / play games)
+  const handleStartBackgroundScan = async () => {
+    if (!uploadedFile || !fileType) return;
+
+    setIsPreparingBackground(true);
+    setBackgroundPrepMessage('Mempersiapkan payload frame untuk server backend...');
+    const existingNames = members.map((m) => m.name);
+
+    try {
+      let framesPayload: Array<{ image: string; mimeType: string; timeSec: number }> = [];
+      let previewThumb: string | undefined = undefined;
+
+      if (fileType === 'video') {
+        if (!videoRef.current) {
+          alert('Video belum siap. Tunggu beberapa saat.');
+          setIsPreparingBackground(false);
+          return;
+        }
+        const intervalMap = { fast: 1.4, normal: 0.8, detailed: 0.45 };
+        setBackgroundPrepMessage('Mengekstrak frame video secara cepat (1-2 detik)...');
+        framesPayload = await extractFramesFromVideo(
+          videoRef.current,
+          intervalMap[sampleSpeed],
+          (pct, curr, tot) => {
+            setBackgroundPrepMessage(`Mengekstrak frame #${curr}/${tot} (${pct}%)...`);
+          }
+        );
+        if (framesPayload.length > 0) {
+          previewThumb = `data:${framesPayload[0].mimeType};base64,${framesPayload[0].image}`;
+        }
+      } else {
+        setBackgroundPrepMessage('Mengonversi foto donasi...');
+        const extracted = await extractFrameFromImage(uploadedFile);
+        framesPayload = [{ image: extracted.image, mimeType: extracted.mimeType, timeSec: 0 }];
+        previewThumb = extracted.previewThumbnail;
+      }
+
+      setBackgroundPrepMessage('Mengirim tugas pemrosesan ke antrean server backend...');
+      const res = await startJob({
+        fileName: uploadedFile.name,
+        fileType,
+        frames: framesPayload,
+        minConfidence,
+        enableDualPass,
+        existingMemberNames: existingNames,
+        previewThumbnail: previewThumb,
+      });
+
+      if (res.success && res.jobId) {
+        setDispatchedJobId(res.jobId);
+        setIsPreparingBackground(false);
+      } else {
+        alert(res.error || 'Gagal memulai background task.');
+        setIsPreparingBackground(false);
+      }
+    } catch (err: any) {
+      alert('Kendala saat mempersiapkan background job: ' + (err?.message || err));
+      setIsPreparingBackground(false);
+    }
+  };
+
+  // Start Unified Direct OCR Scanning
   const handleStartScan = async () => {
     if (!uploadedFile || !fileType) return;
 
@@ -1194,42 +1292,99 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                 </div>
               </div>
 
+              {/* Background Process Status Banner (if active) */}
+              {(isPreparingBackground || latestActiveJob) && (
+                <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-2xl space-y-2.5 animate-fade-in shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Activity className="w-5 h-5 text-amber-600 animate-spin" />
+                      <span className="text-xs font-extrabold text-amber-950">
+                        {isPreparingBackground ? 'Mempersiapkan Background Task...' : `Sedang Diproses di Server (${latestActiveJob?.progress.percent}%)`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsJobModalOpen(true)}
+                      className="px-2.5 py-1 rounded-lg bg-amber-200 hover:bg-amber-300 text-amber-900 text-xs font-bold transition-colors flex items-center space-x-1"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Lihat Riwayat</span>
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-amber-800 leading-relaxed font-medium">
+                    {isPreparingBackground
+                      ? backgroundPrepMessage
+                      : (
+                        <>
+                          <strong className="block text-amber-950">💡 Bebas Ditutup / Ditinggal Main Game!</strong>
+                          <span>{latestActiveJob?.progress.message || 'Server sedang memindai frame & mencocokkan donatur...'}. Anda boleh menutup tab atau keluar dari browser kapan saja.</span>
+                        </>
+                      )}
+                  </p>
+
+                  {latestActiveJob && (
+                    <div className="w-full bg-amber-100 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="bg-amber-500 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${Math.max(5, latestActiveJob.progress.percent)}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Scan Action Buttons */}
-              <div className="pt-3 border-t border-slate-100 flex flex-col gap-2">
-                {!isProcessing ? (
-                  <button
-                    type="button"
-                    id="start-ocr-scan-btn"
-                    onClick={handleStartScan}
-                    className="w-full py-3 px-4 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-sm shadow-md shadow-sky-200 transition-all flex items-center justify-center space-x-2"
-                  >
-                    {engineMode === 'gemini_vision' ? (
-                      <>
-                        <Bot className="w-4 h-4 text-sky-200" />
-                        <span>Mulai Analisis Gemini Vision AI</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 text-amber-300" />
-                        <span>Mulai Pindai Tesseract OCR</span>
-                      </>
-                    )}
-                  </button>
-                ) : (
+              <div className="pt-3 border-t border-slate-100 flex flex-col gap-2.5">
+                {!isProcessing && !isPreparingBackground && (
+                  <>
+                    {/* Primary Button: Background Server Processing */}
+                    <button
+                      type="button"
+                      id="start-background-ocr-btn"
+                      onClick={handleStartBackgroundScan}
+                      className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-sky-600 via-blue-600 to-indigo-600 hover:from-sky-700 hover:to-indigo-700 text-white font-extrabold text-sm shadow-lg shadow-sky-200 hover:shadow-xl transition-all flex items-center justify-center space-x-2 group hover:scale-[1.01]"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                      <span>Mulai Scan di Server (Bisa Ditinggal Main Game)</span>
+                      <ArrowRight className="w-4 h-4 text-sky-200 group-hover:translate-x-1 transition-transform" />
+                    </button>
+
+                    {/* Secondary Button: Direct Scan in Browser */}
+                    <button
+                      type="button"
+                      id="start-ocr-scan-btn"
+                      onClick={handleStartScan}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors flex items-center justify-center space-x-2"
+                    >
+                      {engineMode === 'gemini_vision' ? (
+                        <>
+                          <Bot className="w-3.5 h-3.5 text-sky-600" />
+                          <span>Pindai Langsung di Tab Browser (Direct AI)</span>
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Pindai Langsung via Tesseract OCR</span>
+                        </>
+                      )}
+                    </button>
+                  </>
+                )}
+
+                {isProcessing && (
                   <button
                     type="button"
                     onClick={handleCancelScan}
                     className="w-full py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-md shadow-rose-200 transition-all flex items-center justify-center space-x-2"
                   >
                     <X className="w-4 h-4" />
-                    <span>Batalkan Pemindaian</span>
+                    <span>Batalkan Pemindaian Browser</span>
                   </button>
                 )}
 
                 <p className="text-[11px] text-slate-400 text-center">
-                  {engineMode === 'gemini_vision'
-                    ? 'Gemini Vision menganalisis baris visual tanpa rekayasa data.'
-                    : 'Web Worker berjalan di latar belakang tanpa membuat halaman lag.'}
+                  💡 Tombol <strong>Scan di Server</strong> menjalankan proses di background backend sehingga aman ditinggal keluar browser ataupun hapus cache.
                 </p>
               </div>
             </div>
@@ -1238,6 +1393,30 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
           {/* Results Verification & Review Section */}
           {hasScanned && !isProcessing && (
             <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-5 animate-fade-in">
+              {/* Selected Background Job Banner */}
+              {selectedJobForReview && (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between text-xs text-emerald-900">
+                  <div className="flex items-center space-x-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <span className="font-extrabold text-emerald-950">
+                        Memuat Hasil Riwayat: {selectedJobForReview.fileName}
+                      </span>
+                      <p className="text-[11px] text-emerald-700">
+                        Selesai pada {selectedJobForReview.completedAt ? formatIndonesianDateTime(selectedJobForReview.completedAt) : 'Server'} • {selectedJobForReview.resultItems.length} donatur siap ditinjau &amp; disimpan.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearJobForReview}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-slate-600 hover:text-slate-900 text-xs font-semibold"
+                  >
+                    Tutup Riwayat
+                  </button>
+                </div>
+              )}
+
               {/* Header Bar */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
                 <div>

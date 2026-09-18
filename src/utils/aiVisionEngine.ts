@@ -810,3 +810,112 @@ async function reconcileVideoDetections(
 
   return results;
 }
+
+/**
+ * Fast client-side frame extractor to prepare payloads for background server processing
+ */
+export async function extractFramesFromVideo(
+  videoElement: HTMLVideoElement,
+  sampleIntervalSec = 0.8,
+  onProgress?: (percent: number, current: number, total: number) => void
+): Promise<Array<{ image: string; mimeType: string; timeSec: number }>> {
+  const duration = await ensureVideoReadyAndGetDuration(videoElement);
+  const effectiveInterval = Math.max(0.6, Math.min(1.5, sampleIntervalSec));
+  const timestamps: number[] = [];
+  for (let t = 0.15; t < duration; t += effectiveInterval) {
+    timestamps.push(t);
+  }
+  if (timestamps.length === 0 || timestamps[timestamps.length - 1] < duration - 0.3) {
+    timestamps.push(Math.max(0, duration - 0.2));
+  }
+
+  const totalFrames = timestamps.length;
+  const offscreenCanvas = document.createElement('canvas');
+  const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+  const frames: Array<{ image: string; mimeType: string; timeSec: number }> = [];
+
+  const seekTo = (time: number): Promise<void> => {
+    return new Promise((resolve) => {
+      let timeoutId: any = null;
+      const onSeeked = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        resolve();
+      };
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        videoElement.removeEventListener('seeked', onSeeked);
+        videoElement.removeEventListener('error', onError);
+      };
+      videoElement.addEventListener('seeked', onSeeked, { once: true });
+      videoElement.addEventListener('error', onError, { once: true });
+      timeoutId = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, 2500);
+
+      try {
+        videoElement.currentTime = time;
+      } catch {
+        cleanup();
+        resolve();
+      }
+    });
+  };
+
+  for (let i = 0; i < totalFrames; i++) {
+    const timeSec = timestamps[i];
+    onProgress?.(Math.round(((i + 1) / totalFrames) * 100), i + 1, totalFrames);
+
+    await seekTo(timeSec);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const videoWidth = videoElement.videoWidth || 1280;
+    const videoHeight = videoElement.videoHeight || 720;
+    offscreenCanvas.width = videoWidth;
+    offscreenCanvas.height = videoHeight;
+
+    if (ctx) {
+      ctx.drawImage(videoElement, 0, 0, videoWidth, videoHeight);
+    }
+
+    const mimeType = 'image/jpeg';
+    const frameDataUrl = offscreenCanvas.toDataURL(mimeType, 0.85);
+    const base64 = frameDataUrl.includes(',') ? frameDataUrl.split(',')[1] : frameDataUrl;
+
+    frames.push({
+      image: base64,
+      mimeType,
+      timeSec,
+    });
+  }
+
+  return frames;
+}
+
+/**
+ * Fast client-side image extractor to prepare payload for background server processing
+ */
+export async function extractFrameFromImage(
+  file: File
+): Promise<{ image: string; mimeType: string; previewThumbnail?: string }> {
+  const mimeType = file.type || 'image/jpeg';
+  const arrayBuf = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuf);
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  return {
+    image: base64,
+    mimeType,
+    previewThumbnail: `data:${mimeType};base64,${base64}`,
+  };
+}
+
