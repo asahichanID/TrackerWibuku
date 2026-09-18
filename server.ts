@@ -54,6 +54,36 @@ async function startServer() {
     }
   });
 
+  // Pass 2: Double-Scan Verification & Anomaly Reconciliation Endpoint
+  app.post("/api/verify-double-scan", async (req: Request, res: Response) => {
+    try {
+      const { image, mimeType, candidateItems } = req.body;
+
+      if (!image || typeof image !== "string") {
+        res.status(400).json({
+          success: false,
+          error: "Payload missing 'image' base64 string.",
+        });
+        return;
+      }
+
+      const result = await defaultGeminiVisionProvider.verifyAnomalies(
+        image,
+        mimeType || "image/jpeg",
+        Array.isArray(candidateItems) ? candidateItems : []
+      );
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[Server API /api/verify-double-scan] Error:", err);
+      res.status(500).json({
+        success: false,
+        error: err?.message || "Internal server error during double scan verification.",
+        items: [],
+      });
+    }
+  });
+
   // Batch Analyze Multiple Frames (Optimized for Video)
   app.post("/api/analyze-frames-batch", async (req: Request, res: Response) => {
     try {

@@ -54,6 +54,66 @@ const DEFAULT_SETTINGS: AppSettings = {
   canvasTheme: 'anime-sky',
 };
 
+/**
+ * Strips heavy Base64 image data URLs from scan session items before serializing to localStorage.
+ * Prevents QuotaExceededError (5MB browser limit) while maintaining full donation records.
+ */
+function sanitizeSessionsForStorage(sessions: ScanSession[]): ScanSession[] {
+  // Cap at 50 most recent sessions in localStorage
+  const recent = sessions.slice(0, 50);
+  return recent.map((session) => ({
+    ...session,
+    sessionPreviewUrl: undefined, // remove full-res preview base64
+    items: (session.items || []).map((item) => {
+      // Keep pure metadata, strip bulky base64 data URLs
+      const cleanItem: ScanResultItem = {
+        id: item.id,
+        name: item.name,
+        nominal: item.nominal,
+        confidence: item.confidence,
+        frameTimeSec: item.frameTimeSec,
+        status: item.status,
+        isNewMember: item.isNewMember,
+        rawText: item.rawText,
+        notes: item.notes,
+        engine: item.engine,
+        rowPosition: item.rowPosition,
+        previousNominal: item.previousNominal,
+        thumbnailUrl: undefined, // strip large base64 image
+      };
+      return cleanItem;
+    }),
+  }));
+}
+
+/**
+ * Safe localStorage setter with auto-pruning fallback if quota is exceeded
+ */
+function safeSetLocalStorage(key: string, value: any): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err: any) {
+    console.warn(`[Database] localStorage write failed for key "${key}":`, err?.message);
+    if (
+      err?.name === 'QuotaExceededError' ||
+      err?.code === 22 ||
+      err?.code === 1014 ||
+      (typeof err?.message === 'string' && err.message.toLowerCase().includes('quota'))
+    ) {
+      try {
+        if (Array.isArray(value)) {
+          // If it's an array (like sessions or members), aggressively prune to latest 10 items
+          const pruned = value.slice(0, 10);
+          localStorage.setItem(key, JSON.stringify(pruned));
+          console.info(`[Database] Auto-pruned "${key}" to 10 entries to satisfy localStorage quota.`);
+        }
+      } catch (pruneErr) {
+        console.error(`[Database] Pruning fallback also failed for "${key}":`, pruneErr);
+      }
+    }
+  }
+}
+
 const DatabaseContext = createContext<DatabaseContextType | null>(null);
 
 export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -71,7 +131,13 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [scanSessions, setScanSessions] = useState<ScanSession[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.SESSIONS);
-      return stored ? JSON.parse(stored) : [];
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          return sanitizeSessionsForStorage(parsed);
+        }
+      }
+      return [];
     } catch (e) {
       console.error('Failed to load sessions from localStorage', e);
       return [];
@@ -87,29 +153,18 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
-  // Save to localStorage when state changes
+  // Save to localStorage safely when state changes
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.MEMBERS, JSON.stringify(members));
-    } catch (e) {
-      console.error('Failed to save members to localStorage', e);
-    }
+    safeSetLocalStorage(STORAGE_KEYS.MEMBERS, members);
   }, [members]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(scanSessions));
-    } catch (e) {
-      console.error('Failed to save sessions to localStorage', e);
-    }
+    const sanitized = sanitizeSessionsForStorage(scanSessions);
+    safeSetLocalStorage(STORAGE_KEYS.SESSIONS, sanitized);
   }, [scanSessions]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
-    } catch (e) {
-      console.error('Failed to save settings to localStorage', e);
-    }
+    safeSetLocalStorage(STORAGE_KEYS.SETTINGS, settings);
   }, [settings]);
 
   // Derived real-time statistics
