@@ -1,0 +1,6 @@
+{
+  "name": "Clan Wibu Donation Tracker",
+  "description": "Aplikasi OCR File Video dan Foto Pelacak Donasi Gems Clan Wibu dengan Leaderboard dan Laporan Canvas by Shiro Anna",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
