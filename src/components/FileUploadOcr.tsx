@@ -531,12 +531,10 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
       setCachedRecord(null);
       setExistingCache(null);
 
-      // Lepaskan hardware video decoder browser dari RAM/VRAM untuk mencegah ngeframe/lag
+      // Pause video playback after scan completes to keep preview available for side-by-side review
       if (videoRef.current) {
         try {
           videoRef.current.pause();
-          videoRef.current.removeAttribute('src');
-          videoRef.current.load();
         } catch {
           // ignore
         }

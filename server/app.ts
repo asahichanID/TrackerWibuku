@@ -9,15 +9,7 @@ export function createApiApp() {
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
-  // URL normalization for serverless environments (e.g. Vercel) where /api prefix might be stripped or retained
-  app.use((req, _res, next) => {
-    if (req.url && !req.url.startsWith("/api")) {
-      req.url = `/api${req.url.startsWith("/") ? "" : "/"}${req.url}`;
-    }
-    next();
-  });
-
-  // API Health Check & Root Handlers
+  // API Health Check Handlers (ONLY for explicit /api/health or /api)
   const healthHandler = (_req: Request, res: Response) => {
     res.json({
       status: "ok",
@@ -29,7 +21,6 @@ export function createApiApp() {
 
   app.get("/api/health", healthHandler);
   app.get("/api", healthHandler);
-  app.get("/api/", healthHandler);
 
   // ==========================================
   // BACKGROUND JOB MANAGEMENT ENDPOINTS

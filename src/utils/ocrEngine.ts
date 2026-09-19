@@ -49,13 +49,25 @@ export async function getTesseractWorker(onLog?: (msg: string) => void): Promise
   isWorkerInitializing = true;
   try {
     if (onLog) onLog('Memulai Tesseract OCR Web Worker...');
-    const worker = await createWorker('eng+ind', 1, {
-      logger: (m) => {
-        if (onLog && m.status === 'recognizing text') {
-          // Worker recognition progress
-        }
-      },
-    });
+    let worker: Worker;
+    try {
+      worker = await createWorker('eng+ind', 1, {
+        logger: (m) => {
+          if (onLog && m.status === 'recognizing text') {
+            // Worker recognition progress
+          }
+        },
+      });
+    } catch (langErr) {
+      console.warn('Language eng+ind fallback to eng:', langErr);
+      worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (onLog && m.status === 'recognizing text') {
+            // Worker recognition progress
+          }
+        },
+      });
+    }
 
     // Configure Tesseract parameters for high OCR accuracy on screen text
     await worker.setParameters({
