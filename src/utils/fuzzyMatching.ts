@@ -34,13 +34,82 @@ export function levenshteinDistance(a: string, b: string): number {
 
 // Calculate Similarity (0.0 to 1.0)
 export function stringSimilarity(str1: string, str2: string): number {
-  const s1 = str1.trim().toLowerCase();
-  const s2 = str2.trim().toLowerCase();
+  const s1 = (str1 || '').trim().toLowerCase();
+  const s2 = (str2 || '').trim().toLowerCase();
   if (s1 === s2) return 1.0;
   const maxLength = Math.max(s1.length, s2.length);
   if (maxLength === 0) return 1.0;
   const distance = levenshteinDistance(s1, s2);
   return Math.max(0, (maxLength - distance) / maxLength);
+}
+
+/**
+ * Extracts the core username by stripping common clan tags, brackets, and decoration
+ * Examples:
+ * "『緒』 - rzkyfhrzi." -> "rzkyfhrzi"
+ * "『緒』Sleepy'" -> "sleepy"
+ * "緒 liplip." -> "liplip"
+ * "kesya Andrianiputri" -> "kesya andrianiputri"
+ */
+export function extractCorePlayerName(name: string): string {
+  if (!name) return '';
+  return name
+    // Strip clan bracket tags like 『緒』, [緒], (緒), 【緒】, 緒, etc.
+    .replace(/[『「【《\[(][^』」】》\])]*[』」】》\])]/g, '')
+    // Strip leading clan prefix words like "緒", "CLAN", "WIBU" if followed by dash/space
+    .replace(/^(?:緒|『緒』|clan|wibu)\s*[-_·•|:~]?\s*/i, '')
+    // Strip trailing or leading punctuation and role badges
+    .replace(/\b(OFFICER|VICE LEADER|ADMIRAL|LEADER|MEMBER|ELDER)\b/gi, '')
+    .replace(/^[-_·•|:~.\s]+|[-_·•|:~.\s]+$/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Robustly checks if two names represent the EXACT SAME clan member across video frames
+ * Strictly preserves distinct clan members (never merges different names like "Leo" and "Leon", or "Rizky" and "Rizka")
+ */
+export function isSameClanMember(nameA: string, nameB: string, timeGapSec?: number): boolean {
+  if (!nameA || !nameB) return false;
+
+  const cleanA = sanitizeName(nameA).toLowerCase().trim();
+  const cleanB = sanitizeName(nameB).toLowerCase().trim();
+
+  // 1. Exact or sanitized match
+  if (cleanA === cleanB) return true;
+
+  // 2. Core name match (stripping clan tags like 『緒』, 緒, etc.)
+  const coreA = extractCorePlayerName(cleanA);
+  const coreB = extractCorePlayerName(cleanB);
+
+  if (coreA && coreB) {
+    // Exact match of core nickname without clan brackets
+    if (coreA === coreB) return true;
+
+    // Boundary truncation during scroll (only if one ends with ellipsis or trailing dot)
+    // and timeGap is within adjacent frames (< 3.0s)
+    if (timeGapSec !== undefined && Math.abs(timeGapSec) <= 3.0) {
+      if (coreA.endsWith('...') || coreA.endsWith('.') || coreB.endsWith('...') || coreB.endsWith('.')) {
+        const pureA = coreA.replace(/\.+$/, '');
+        const pureB = coreB.replace(/\.+$/, '');
+        if (pureA.length >= 4 && pureB.length >= 4) {
+          if (pureA.startsWith(pureB) || pureB.startsWith(pureA)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: ultra-high similarity (>= 0.95) only for adjacent frames (<= 2.5s)
+  if (timeGapSec !== undefined && Math.abs(timeGapSec) <= 2.5) {
+    if (Math.abs(cleanA.length - cleanB.length) <= 1) {
+      const sim = stringSimilarity(cleanA, cleanB);
+      if (sim >= 0.95) return true;
+    }
+  }
+
+  return false;
 }
 
 // Find closest existing member name in database
@@ -168,17 +237,8 @@ export function parseOcrLine(line: string): { name: string; nominal: number; con
     }
   }
 
-  // Extra check: if line is just a name without nominal (e.g. member who hasn't donated yet, or nominal is 0)
-  if (!foundNominal) {
-    // Check if line looks like a valid username without garbage
-    const isValidNameOnly = /^[a-zA-Z0-9_\-.\s~@#$]{3,24}$/.test(cleanLine) && !/\d{5,}/.test(cleanLine);
-    if (isValidNameOnly && !isCommonNoiseWord(cleanLine)) {
-      return {
-        name: sanitizeName(cleanLine),
-        nominal: 0,
-        confidenceBonus: -10,
-      };
-    }
+  // Extra check: If line has no donation nominal, return null (STRICT: only detect members who have actually donated)
+  if (!foundNominal || foundNominal <= 0) {
     return null;
   }
 
@@ -195,7 +255,7 @@ export function parseOcrLine(line: string): { name: string; nominal: number; con
   };
 }
 
-// Check for common UI noise words (Game headers, menus, timestamps)
+// Check for common UI noise words (Game headers, menus, timestamps, roles)
 function isCommonNoiseWord(str: string): boolean {
   const noise = [
     'clan', 'guild', 'donation', 'donasi', 'leaderboard', 'rank', 'ranking',
@@ -203,17 +263,22 @@ function isCommonNoiseWord(str: string): boolean {
     'setting', 'pengaturan', 'level', 'status', 'online', 'offline', 'score',
     'point', 'waktu', 'time', 'search', 'cari', 'filter', 'semua', 'all',
     'claim', 'klaim', 'reward', 'hadiah', 'season', 'musim', 'event', 'battle',
-    'war', 'guild war', 'clan war'
+    'war', 'guild war', 'clan war', 'officer', 'vice leader', 'admiral', 'leader', 'elder',
+    'browse clan', 'gabung'
   ];
   const s = str.toLowerCase().trim();
   return noise.includes(s) || /^\d+$/.test(s);
 }
 
-// Sanitize member name
+// Sanitize member name while preserving brackets (『』), Japanese/Asian characters, and standard nick symbols
 export function sanitizeName(name: string): string {
   return name
-    .replace(/^[^a-zA-Z0-9_]+/, '') // remove leading symbols
-    .replace(/[^a-zA-Z0-9_\-.\s~@#$]+$/g, '') // remove trailing garbage
+    // Strip accidental role tags contaminating name
+    .replace(/\b(OFFICER|VICE LEADER|ADMIRAL|LEADER|MEMBER|ELDER)\b/gi, '')
+    // Strip subtitle residue like "Total ... Gabung ..."
+    .replace(/\bTotal\s+[\d.,]+[KkMm]?\s*[·•-]?\s*Gabung\s+[\w\s]+/gi, '')
+    // Strip leading rank numbers like "1. ", "02 - ", "#3 "
+    .replace(/^(?:#|\bno\.?|\b)\s*\d+[\s.:\-–—)\]]+\s*/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 }

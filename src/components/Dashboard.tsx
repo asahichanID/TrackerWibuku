@@ -28,10 +28,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ setActiveTab }) => {
 
   const isDatabaseEmpty = members.length === 0 && scanSessions.length === 0;
 
-  // Sort members by nominal descending to get top donors
+  // Sort members to get top donors / recent verified donors
   const topDonors = [...members]
-    .filter((m) => m.nominal > 0)
-    .sort((a, b) => b.nominal - a.nominal)
+    .filter((m) => m.status === 'donated' || m.nominal > 0)
+    .sort((a, b) => {
+      if (b.nominal !== a.nominal) return b.nominal - a.nominal;
+      return new Date(b.lastDetectedAt).getTime() - new Date(a.lastDetectedAt).getTime();
+    })
     .slice(0, 5);
 
   const targetProgress = settings.targetDonation > 0
@@ -286,9 +289,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ setActiveTab }) => {
                       </div>
 
                       <div className="text-right">
-                        <span className="font-mono font-bold text-sm text-sky-700">
-                          {formatCurrency(donor.nominal, settings.currencySymbol)}
-                        </span>
+                        {donor.nominal > 0 ? (
+                          <span className="font-mono font-bold text-sm text-sky-700">
+                            {formatCurrency(donor.nominal, settings.currencySymbol)}
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                            Sudah Donasi
+                          </span>
+                        )}
                       </div>
                     </div>
                   );

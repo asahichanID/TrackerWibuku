@@ -15,7 +15,8 @@ import {
   analyzeVideoWithGemini,
   checkGeminiVisionHealth,
   extractFramesFromVideo,
-  extractFrameFromImage
+  extractFrameFromImage,
+  fileToBase64
 } from '../utils/aiVisionEngine';
 import {
   cacheFileIntoProject,
@@ -136,7 +137,10 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
   // Visual Reference Inspector State
   const [reviewFilter, setReviewFilter] = useState<'all' | 'review' | 'verified'>('all');
   const [zoomLevel, setZoomLevel] = useState<number>(1);
-  const [showVisualRef, setShowVisualRef] = useState<boolean>(true);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  // Visual reference panel state (default false to prevent hardware video decoder lag)
+  const [showVisualRef, setShowVisualRef] = useState<boolean>(false);
 
   // Manual Add inside Review
   const [isAddingManual, setIsAddingManual] = useState(false);
@@ -152,8 +156,16 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
   // Auto load selected job from Background Tasks into Review table
   useEffect(() => {
     if (selectedJobForReview && selectedJobForReview.resultItems) {
-      setScanItems(selectedJobForReview.resultItems);
-      setSelectedItemIds(new Set(selectedJobForReview.resultItems.map((i) => i.id)));
+      const sorted = [...selectedJobForReview.resultItems].sort((a, b) => (a.rankNumber || 0) - (b.rankNumber || 0));
+      const finalized = sorted.map((item, idx) => ({
+        ...item,
+        rankNumber: idx + 1,
+        rowPosition: idx + 1,
+        notes: `No. ${idx + 1} • Sudah Donasi`,
+        rawText: `No. ${idx + 1} | ${item.name} | Sudah Donasi`,
+      }));
+      setScanItems(finalized);
+      setSelectedItemIds(new Set(finalized.map((i) => i.id)));
       setHasScanned(true);
       setFileType(selectedJobForReview.fileType);
       setIsProcessing(false);
@@ -168,17 +180,14 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
     }
   }, [selectedJobForReview]);
 
-  // Check Gemini Vision health and existing cache on mount
+  // Check Gemini Vision health and clean stale media cache on mount
   useEffect(() => {
     checkGeminiVisionHealth().then((res) => {
       setIsGeminiHealthy(res.available);
     });
 
-    getLatestCachedMedia().then((media) => {
-      if (media) {
-        setExistingCache(media);
-      }
-    });
+    // Ensure any leftover media cache is completely purged
+    clearProjectMediaCache().catch(console.warn);
   }, []);
 
   // Process and cache uploaded file into project
@@ -458,8 +467,38 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
         }
       }
 
-      setScanItems(results);
-      setSelectedItemIds(new Set(results.map((item) => item.id)));
+      // Enforce clean sequential ranks 1, 2, 3... N
+      const sortedResults = [...results].sort((a, b) => (a.rankNumber || 0) - (b.rankNumber || 0));
+      const finalizedResults = sortedResults.map((item, idx) => ({
+        ...item,
+        rankNumber: idx + 1,
+        rowPosition: idx + 1,
+        notes: `No. ${idx + 1} • Sudah Donasi`,
+        rawText: `No. ${idx + 1} | ${item.name} | Sudah Donasi`,
+      }));
+
+      setScanItems(finalizedResults);
+      setSelectedItemIds(new Set(finalizedResults.map((item) => item.id)));
+
+      // MANDATE: Foto dan video setelah digunakan WAJIB dihapus di cache-nya
+      try {
+        await clearProjectMediaCache();
+      } catch (cleanErr) {
+        console.warn('[Cache] Auto-clear error:', cleanErr);
+      }
+      setCachedRecord(null);
+      setExistingCache(null);
+
+      // Lepaskan hardware video decoder browser dari RAM/VRAM untuk mencegah ngeframe/lag
+      if (videoRef.current) {
+        try {
+          videoRef.current.pause();
+          videoRef.current.removeAttribute('src');
+          videoRef.current.load();
+        } catch {
+          // ignore
+        }
+      }
 
       if (results.length > 0) {
         confetti({
@@ -503,7 +542,7 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
         errorMsg = 'Server Gemini Vision sedang mengalami lonjakan beban sesaat. Silakan coba klik Mulai Scan kembali dalam beberapa saat atau gunakan Mesin OCR Presisi.';
       }
 
-      console.error('Scan Error:', errorMsg);
+      console.warn('Scan status note:', errorMsg);
       setProgressInfo((prev) => ({
         ...prev,
         status: 'error',
@@ -523,13 +562,31 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
   // Reset File
   const handleResetFile = () => {
     if (isProcessing) handleCancelScan();
-    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      } catch {
+        // ignore
+      }
+    }
+    if (fileUrl) {
+      try {
+        URL.revokeObjectURL(fileUrl);
+      } catch {
+        // ignore
+      }
+    }
     setUploadedFile(null);
     setFileType(null);
     setFileUrl(null);
     setScanItems([]);
     setHasScanned(false);
+    setCachedRecord(null);
+    setExistingCache(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    clearProjectMediaCache().catch(console.warn);
   };
 
   // Toggle Selection
@@ -599,9 +656,21 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
     setReVerifyingItemId(targetItem.id);
 
     try {
-      const imagePayload = targetItem.thumbnailUrl || fileUrl || '';
-      if (!imagePayload) {
-        alert('Pratinjau visual tidak tersedia untuk baris ini.');
+      let imageBase64 = '';
+      let mimeType = 'image/jpeg';
+
+      if (targetItem.thumbnailUrl && targetItem.thumbnailUrl.startsWith('data:')) {
+        const parts = targetItem.thumbnailUrl.split(';base64,');
+        mimeType = parts[0].replace('data:', '') || 'image/jpeg';
+        imageBase64 = parts[1] || '';
+      } else {
+        const b64 = await fileToBase64(uploadedFile);
+        imageBase64 = b64.base64;
+        mimeType = b64.mimeType;
+      }
+
+      if (!imageBase64) {
+        alert('Pratinjau visual tidak dapat dimuat untuk baris ini.');
         return;
       }
 
@@ -609,8 +678,8 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: imagePayload,
-          mimeType: 'image/jpeg',
+          image: imageBase64,
+          mimeType,
           candidateItems: [
             {
               name: targetItem.name,
@@ -692,7 +761,7 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
     );
 
     if (itemsToSave.length === 0) {
-      alert('Tidak ada donatur gems yang dipilih untuk disimpan.');
+      alert('Tidak ada anggota yang dipilih untuk disimpan.');
       return;
     }
 
@@ -708,6 +777,32 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
 
     const summary = saveScanResults(sessionMetadata, itemsToSave, updateMode);
 
+    // MANDATE: Foto/video setelah digunakan wajib dihapus di cache nya
+    clearProjectMediaCache().catch(console.warn);
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      } catch {
+        // ignore
+      }
+    }
+    if (fileUrl) {
+      try {
+        URL.revokeObjectURL(fileUrl);
+      } catch {
+        // ignore
+      }
+    }
+    setUploadedFile(null);
+    setFileType(null);
+    setFileUrl(null);
+    setScanItems([]);
+    setHasScanned(false);
+    setCachedRecord(null);
+    setExistingCache(null);
+
     confetti({
       particleCount: 100,
       spread: 80,
@@ -717,9 +812,8 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
 
     alert(
       `Berhasil menyimpan hasil scan ${fileType === 'video' ? 'video' : 'foto'} ke database!\n` +
-      `• Member Baru: ${summary.newCount}\n` +
-      `• Member Diperbarui: ${summary.updatedCount}\n` +
-      `• Total Donasi Gems: ${formatCurrency(summary.totalScannedNominal, settings.currencySymbol)}`
+      `• Total Donatur: ${itemsToSave.length} Member (No. 1 s/d No. ${itemsToSave.length})\n` +
+      `• Status: Seluruhnya Tercatat 'Sudah Donasi'`
     );
 
     setActiveTab('leaderboard');
@@ -729,6 +823,19 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
   const activeItems = scanItems.filter((i) => i.status !== 'rejected');
   const selectedItems = activeItems.filter((i) => selectedItemIds.has(i.id));
   const totalScannedGems = selectedItems.reduce((sum, i) => sum + i.nominal, 0);
+
+  const filteredScanItems = scanItems
+    .filter((item) => {
+      if (reviewFilter === 'review') return item.status === 'review';
+      if (reviewFilter === 'verified') return item.status === 'accepted' || item.status === 'modified';
+      return true;
+    })
+    .sort((a, b) => (a.rankNumber || 0) - (b.rankNumber || 0));
+  const totalPages = pageSize === -1 ? 1 : Math.ceil(filteredScanItems.length / pageSize) || 1;
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+  const displayedScanItems = pageSize === -1
+    ? filteredScanItems
+    : filteredScanItems.slice((safeCurrentPage - 1) * pageSize, safeCurrentPage * pageSize);
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -951,7 +1058,44 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
       ) : uploadedFile ? (
         /* File Loaded & OCR Stage */
         <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {hasScanned && !isProcessing && scanItems.length > 0 ? (
+            /* Compact Header when Results are Active (Freeing Video Hardware Decoders & RAM) */
+            <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center space-x-3.5">
+                <div className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-xs ${
+                  fileType === 'video' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
+                }`}>
+                  {fileType === 'video' ? <Video className="w-5 h-5" /> : <FileImage className="w-5 h-5" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="font-extrabold text-sm text-slate-800 truncate max-w-[240px] sm:max-w-[360px]">
+                      {uploadedFile.name}
+                    </h4>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                      Cache Media Dihapus (Bebas Lag & Hemat RAM)
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Pemindaian selesai • <strong className="text-slate-800">{scanItems.length} donatur ditemukan</strong> • Media foto/video otomatis dibersihkan dari cache untuk mencegah lag & ngeframe.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleResetFile}
+                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors flex items-center space-x-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Scan Media Lain</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Left: Preview Player / Image Canvas & Cache Status Card */}
             <div className="lg:col-span-7 bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
@@ -1389,6 +1533,7 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
               </div>
             </div>
           </div>
+          )}
 
           {/* Results Verification & Review Section */}
           {hasScanned && !isProcessing && (
@@ -1492,33 +1637,45 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                 </div>
               )}
 
-              {/* Summary Stats Banner */}
+              {/* Summary Stats Banner - Synchronized to total detected member count */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <span className="text-[11px] text-emerald-700 block font-semibold">Total Donatur Ditemukan</span>
+                  <span className="text-xl font-black text-emerald-900 mt-0.5 block">
+                    {activeItems.length} Member
+                  </span>
+                  <span className="text-[10px] text-emerald-600 block mt-0.5">
+                    No. 1 s/d {activeItems.length} Berurutan Rapi
+                  </span>
+                </div>
+
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                  <span className="text-[11px] text-blue-700 block font-semibold">Status Donasi</span>
+                  <span className="text-xl font-black text-blue-900 mt-0.5 block">
+                    {activeItems.length} Sudah Donasi
+                  </span>
+                  <span className="text-[10px] text-blue-600 block mt-0.5">
+                    Semua nama terverifikasi donasi
+                  </span>
+                </div>
+
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                  <span className="text-[11px] text-slate-400 block font-medium">Donatur Terpilih</span>
-                  <span className="text-base font-bold text-slate-800 mt-0.5 block">
+                  <span className="text-[11px] text-slate-500 block font-semibold">Donatur Terpilih</span>
+                  <span className="text-xl font-bold text-slate-800 mt-0.5 block">
                     {selectedItems.length} dari {activeItems.length}
                   </span>
-                </div>
-
-                <div className="p-3 bg-sky-50 border border-sky-100 rounded-xl">
-                  <span className="text-[11px] text-sky-700 block font-medium">Total Donasi Gems Terbaca</span>
-                  <span className="text-base font-extrabold text-sky-700 font-mono mt-0.5 block">
-                    {formatCurrency(totalScannedGems, settings.currencySymbol)}
+                  <span className="text-[10px] text-slate-400 block mt-0.5">
+                    Siap disimpan ke database
                   </span>
                 </div>
 
-                <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-xl">
-                  <span className="text-[11px] text-emerald-700 block font-medium">Member Baru</span>
-                  <span className="text-base font-bold text-emerald-700 mt-0.5 block">
-                    {activeItems.filter((i) => i.isNewMember).length} Member
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                  <span className="text-[11px] text-purple-700 block font-semibold">Sinkronisasi Database</span>
+                  <span className="text-xl font-black text-purple-900 mt-0.5 block">
+                    {activeItems.length} Total Member
                   </span>
-                </div>
-
-                <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl">
-                  <span className="text-[11px] text-blue-700 block font-medium">Member Lama (Update)</span>
-                  <span className="text-base font-bold text-blue-700 mt-0.5 block">
-                    {activeItems.filter((i) => !i.isNewMember).length} Member
+                  <span className="text-[10px] text-purple-600 block mt-0.5">
+                    +{activeItems.filter((i) => i.isNewMember).length} baru • {activeItems.filter((i) => !i.isNewMember).length} update
                   </span>
                 </div>
               </div>
@@ -1678,7 +1835,7 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                               : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
-                          Semua ({scanItems.length})
+                          Semua ({scanItems.length} Member)
                         </button>
                         <button
                           type="button"
@@ -1731,20 +1888,14 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                               </th>
                               <th className="p-3 text-center w-12 font-mono text-slate-500">No.</th>
                               <th className="p-3">Nama Member</th>
-                              <th className="p-3 text-right">Donasi Gems</th>
+                              <th className="p-3 text-center">Status Donasi</th>
                               <th className="p-3 text-center">Keyakinan</th>
                               <th className="p-3 text-center">Status</th>
                               <th className="p-3 text-right">Aksi</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {scanItems
-                              .filter((item) => {
-                                if (reviewFilter === 'review') return item.status === 'review';
-                                if (reviewFilter === 'verified') return item.status === 'accepted' || item.status === 'modified';
-                                return true;
-                              })
-                              .map((item, index) => {
+                            {displayedScanItems.map((item, index) => {
                                 const isSelected = selectedItemIds.has(item.id);
                                 const isEditing = editingItemId === item.id;
                                 const isRejected = item.status === 'rejected';
@@ -1776,8 +1927,8 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                                     </td>
 
                                     {/* Sequential Visual Number */}
-                                    <td className="p-3 text-center font-mono font-bold text-slate-500 text-xs">
-                                      #{item.rowPosition || (index + 1)}
+                                    <td className="p-3 text-center font-mono font-bold text-slate-700 text-xs">
+                                      No. {item.rankNumber && item.rankNumber > 0 ? item.rankNumber : (pageSize === -1 ? index + 1 : (safeCurrentPage - 1) * pageSize + index + 1)}
                                     </td>
 
                                     {/* Member Name */}
@@ -1813,19 +1964,11 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                                     </td>
 
                                     {/* Nominal Gems */}
-                                    <td className="p-3 text-right">
-                                      {isEditing ? (
-                                        <input
-                                          type="number"
-                                          value={editNominal}
-                                          onChange={(e) => setEditNominal(parseInt(e.target.value, 10) || 0)}
-                                          className="px-2 py-1 rounded border border-sky-400 bg-white text-xs font-mono font-bold w-24 text-right focus:outline-sky-600"
-                                        />
-                                      ) : (
-                                        <span className="font-mono font-bold text-sky-700">
-                                          {formatCurrency(item.nominal, settings.currencySymbol)}
-                                        </span>
-                                      )}
+                                    <td className="p-3 text-center">
+                                      <span className="inline-flex items-center gap-1 font-bold text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        <Check className="w-3 h-3 text-emerald-600" />
+                                        Sudah Donasi
+                                      </span>
                                     </td>
 
                                     {/* Confidence */}
@@ -1960,6 +2103,63 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                           </tbody>
                         </table>
                       </div>
+
+                      {/* Pagination Controls */}
+                      {filteredScanItems.length > 0 && (
+                        <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-600">
+                          <div className="flex items-center space-x-2">
+                            <span>
+                              Menampilkan{' '}
+                              <strong className="text-slate-800">
+                                {pageSize === -1
+                                  ? `1 - ${filteredScanItems.length}`
+                                  : `${(safeCurrentPage - 1) * pageSize + 1} - ${Math.min(safeCurrentPage * pageSize, filteredScanItems.length)}`}
+                              </strong>{' '}
+                              dari <strong className="text-slate-800">{filteredScanItems.length}</strong> donatur
+                            </span>
+
+                            <span className="text-slate-300">|</span>
+
+                            <span className="text-[11px] text-slate-500">Tampilkan:</span>
+                            <select
+                              value={pageSize}
+                              onChange={(e) => {
+                                setPageSize(Number(e.target.value));
+                                setCurrentPage(1);
+                              }}
+                              className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700"
+                            >
+                              <option value={50}>50 per hal</option>
+                              <option value={100}>100 per hal</option>
+                              <option value={-1}>Semua ({filteredScanItems.length})</option>
+                            </select>
+                          </div>
+
+                          {totalPages > 1 && (
+                            <div className="flex items-center space-x-1">
+                              <button
+                                type="button"
+                                disabled={safeCurrentPage <= 1}
+                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+                              >
+                                Sebelumnya
+                              </button>
+                              <span className="px-2 font-mono font-bold text-slate-700">
+                                {safeCurrentPage} / {totalPages}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={safeCurrentPage >= totalPages}
+                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+                              >
+                                Berikutnya
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

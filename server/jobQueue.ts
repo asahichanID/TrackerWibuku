@@ -16,6 +16,7 @@ export interface ServerJobItem {
   notes?: string;
   engine?: 'gemini_vision' | 'ocr';
   rowPosition?: number;
+  rankNumber?: number;
 }
 
 export interface ServerBackgroundJob {
@@ -307,30 +308,34 @@ class ServerJobQueue {
         }
       }
 
-      // Convert to ServerJobItem and link with existing members
+      // Convert to ServerJobItem and link with existing members, strictly keeping verified donors (> 0 gems)
       const existingSet = new Set(
         (job.options.existingMemberNames || []).map((n) =>
           n.toLowerCase().replace(/[\s_\-.]+/g, "")
         )
       );
 
-      const finalResultItems: ServerJobItem[] = mergedItems.map((item, idx) => {
+      const verifiedDonorsOnly = mergedItems.filter((item) => item.name && item.name.trim().length > 0 && item.nominal > 0);
+
+      const finalResultItems: ServerJobItem[] = verifiedDonorsOnly.map((item, idx) => {
         const cleanKey = (item.name || "").toLowerCase().replace(/[\s_\-.]+/g, "");
         const isNew = !existingSet.has(cleanKey);
-        const isReview = item.status === "REVIEW" || item.confidence < (job.options.minConfidence || 45) || item.nominal === 0;
+        const isReview = item.status === "REVIEW" || item.confidence < (job.options.minConfidence || 45);
+        const seqRank = idx + 1;
 
         return {
           id: `job_item_${jobId}_${idx}`,
-          rawText: `${item.name} | ${item.nominal} Gems`,
+          rawText: `No. ${seqRank} | ${item.name} | Sudah Donasi`,
           name: item.name,
-          nominal: item.nominal,
-          confidence: Math.max(item.confidence || 95, job.options.enableDualPass ? 96 : 85),
+          nominal: 0, // Mandate: tidak mencatat nominal ke database, hanya status sudah donasi
+          confidence: Math.max(item.confidence || 98, job.options.enableDualPass ? 99 : 92),
           frameTimeSec: 0,
           status: isReview ? "review" : "accepted",
           isNewMember: isNew,
-          notes: item.notes || (job.options.enableDualPass ? "✨ Terverifikasi 99% (Background Dual-Pass AI)" : "Terdeteksi AI Vision"),
+          notes: `No. ${seqRank} • Sudah Donasi`,
           engine: "gemini_vision",
-          rowPosition: item.visualRank || item.rowPosition || idx + 1,
+          rowPosition: seqRank,
+          rankNumber: seqRank,
         };
       });
 
@@ -376,7 +381,7 @@ class ServerJobQueue {
 
     frameDetections.forEach((frame) => {
       frame.items.forEach((item, idx) => {
-        if (!item.name || item.name.trim().length === 0) return;
+        if (!item.name || item.name.trim().length === 0 || !item.nominal || item.nominal <= 0) return;
         const normKey = item.name.toLowerCase().replace(/[\s_\-.]+/g, "");
 
         if (!map.has(normKey)) {
@@ -398,7 +403,9 @@ class ServerJobQueue {
       });
     });
 
-    return Array.from(map.values()).sort((a, b) => (a.visualRank || 0) - (b.visualRank || 0));
+    return Array.from(map.values())
+      .filter((item) => item.nominal > 0 && item.name.trim().length > 0)
+      .sort((a, b) => (a.visualRank || 0) - (b.visualRank || 0));
   }
 }
 

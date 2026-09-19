@@ -189,10 +189,10 @@ export function createApiApp() {
 
       res.json(result);
     } catch (err: any) {
-      console.error("[Server API /api/analyze-frame] Error:", err);
-      res.status(500).json({
+      console.info("[Server API /api/analyze-frame] Handled error:", err?.message || "Vision unavailable");
+      res.json({
         success: false,
-        error: err?.message || "Internal server error during image analysis.",
+        error: err?.message || "Layanan analisis visual sedang sibuk. Silakan coba lagi.",
         items: [],
       });
     }
@@ -219,11 +219,11 @@ export function createApiApp() {
 
       res.json(result);
     } catch (err: any) {
-      console.error("[Server API /api/verify-double-scan] Error:", err);
-      res.status(500).json({
+      console.info("[Server API /api/verify-double-scan] Handled error:", err?.message || "Verification unavailable");
+      res.json({
         success: false,
-        error: err?.message || "Internal server error during double scan verification.",
-        items: [],
+        error: err?.message || "Verifikasi ganda AI sedang sibuk.",
+        items: Array.isArray(req.body?.candidateItems) ? req.body.candidateItems : [],
       });
     }
   });

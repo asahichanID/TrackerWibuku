@@ -50,13 +50,16 @@ export const CanvasReport: React.FC<CanvasReportProps> = ({ setActiveTab }) => {
   // Canvas reference
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Filter and sort members for report (Ranked by nominal descending, then by name)
+  // Filter and sort members for report (Donors first, then alphabetically by name)
   const reportMembers = useMemo(() => {
     let list = [...members];
     if (!includeUndonated) {
-      list = list.filter((m) => m.nominal > 0);
+      list = list.filter((m) => m.status === 'donated' || m.nominal > 0);
     }
     return list.sort((a, b) => {
+      const aDonated = a.status === 'donated' || a.nominal > 0;
+      const bDonated = b.status === 'donated' || b.nominal > 0;
+      if (aDonated !== bDonated) return aDonated ? -1 : 1;
       if (b.nominal !== a.nominal) return b.nominal - a.nominal;
       return a.name.localeCompare(b.name);
     });

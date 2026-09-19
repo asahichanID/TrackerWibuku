@@ -19,6 +19,7 @@ export interface Member {
   donationCount: number;
   history: MemberScanHistoryItem[];
   notes?: string;
+  rankNumber?: number; // Leaderboard row/rank number (1, 2, ..., 232)
 }
 
 export interface ScanResultItem {
@@ -35,6 +36,7 @@ export interface ScanResultItem {
   notes?: string;
   engine?: 'gemini_vision' | 'ocr';
   rowPosition?: number;
+  rankNumber?: number; // Leaderboard row/rank number (1, 2, ..., 232)
 }
 
 export interface ScanSession {
@@ -67,8 +69,6 @@ export interface AppSettings {
   targetDonation: number; // e.g. 5000000
   currencySymbol: string; // e.g. "Rp"
   canvasTheme: 'anime-sky' | 'sakura' | 'night-sky' | 'clean-white';
-  customBackendUrl?: string; // Deno Deploy or custom URL e.g. https://xxx.deno.dev
-  geminiApiKey?: string;
 }
 
 export type JobStatus = 'queued' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';

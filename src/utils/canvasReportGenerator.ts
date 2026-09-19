@@ -425,7 +425,7 @@ export function renderCanvasPage(
     } else {
       col.members.forEach((member, mIdx) => {
         const rowY = rowsStartY + mIdx * rowHeight;
-        const currentRank = col.baseRank + mIdx;
+        const currentRank = member.rankNumber || (col.baseRank + mIdx);
 
         // Alternate row background for clean scannability
         if (mIdx % 2 === 1) {
@@ -484,6 +484,22 @@ export function renderCanvasPage(
           ctx.fillStyle = theme.accentPrimary;
           ctx.font = rowHeight > 36 ? '800 14px "JetBrains Mono", monospace' : '800 13px "JetBrains Mono", monospace';
           ctx.fillText(formatCurrency(member.nominal, config.currencySymbol), col.x + colWidth - 20, rowY + rowHeight / 2 + 3);
+        } else if (member.status === 'donated') {
+          // Donated status pill badge (green)
+          const pillText = 'Sudah Donasi';
+          ctx.font = '700 11px "Plus Jakarta Sans", sans-serif';
+          const pillW = ctx.measureText(pillText).width + 16;
+          const pillH = 20;
+          const pillX = col.x + colWidth - 20 - pillW;
+          const pillY = rowY + (rowHeight - pillH) / 2 - 2;
+
+          drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 10);
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
+          ctx.fill();
+
+          ctx.fillStyle = '#059669';
+          ctx.textAlign = 'center';
+          ctx.fillText(pillText, pillX + pillW / 2, pillY + 14);
         } else {
           // Undonated pill badge
           const pillText = 'Belum Donasi';

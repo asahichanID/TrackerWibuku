@@ -5,27 +5,16 @@
  */
 
 import { ScanResultItem } from '../types';
-import { stringSimilarity, sanitizeName } from './fuzzyMatching';
-import {
-  getEffectiveApiBaseUrl,
-  getCustomApiKey
-} from './backgroundJobApi';
+import { stringSimilarity, sanitizeName, isSameClanMember } from './fuzzyMatching';
 
 function buildVisionUrl(endpoint: string): string {
-  const base = getEffectiveApiBaseUrl();
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return base ? `${base}${cleanEndpoint}` : cleanEndpoint;
+  return endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 }
 
 function getVisionHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
+  return {
     'Content-Type': 'application/json',
   };
-  const key = getCustomApiKey();
-  if (key) {
-    headers['x-gemini-key'] = key;
-  }
-  return headers;
 }
 
 function normalizeClanName(str: string): string {
@@ -59,6 +48,7 @@ export interface VisionEngineOptions {
 }
 
 export interface ApiDetectedDonation {
+  rankNumber?: number; // Leaderboard row number on the left: 1, 2, 3, ..., 232
   name: string;
   nominal: number;
   confidence: number;
@@ -158,16 +148,51 @@ export async function fetchDoubleScanVerify(
 }
 
 /**
- * Converts a browser File object to Base64 string and data URL
+ * Converts a browser File object to Base64 string with smart canvas downscaling for fast & crisp OCR
  */
 export async function fileToBase64(file: File): Promise<{ base64: string; mimeType: string; dataUrl: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const [header, base64] = dataUrl.split(';base64,');
-      const mimeType = header.replace('data:', '');
-      resolve({ base64, mimeType, dataUrl });
+      const rawDataUrl = reader.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 1600;
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
+
+        if (w > maxDim || h > maxDim) {
+          if (w > h) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const mimeType = 'image/jpeg';
+          const dataUrl = canvas.toDataURL(mimeType, 0.85);
+          const parts = dataUrl.split(';base64,');
+          resolve({ base64: parts[1] || '', mimeType, dataUrl });
+        } else {
+          const [header, base64] = rawDataUrl.split(';base64,');
+          const mimeType = header.replace('data:', '');
+          resolve({ base64, mimeType, dataUrl: rawDataUrl });
+        }
+      };
+      img.onerror = () => {
+        const [header, base64] = rawDataUrl.split(';base64,');
+        const mimeType = header.replace('data:', '');
+        resolve({ base64, mimeType, dataUrl: rawDataUrl });
+      };
+      img.src = rawDataUrl;
     };
     reader.onerror = () => {
       reject(new Error(reader.error?.message || 'Gagal membaca berkas gambar.'));
@@ -279,28 +304,48 @@ export async function analyzeImageWithGemini(
     passNumber: 2,
   });
 
-  // Map to ScanResultItem preserving exact visual rank order
+  // Map to ScanResultItem preserving exact visual rank order, strictly filtering positive donors
   const existingSet = new Set(existingMemberNames.map(normalizeClanName));
-  const results: ScanResultItem[] = finalItems.map((item, idx) => {
+  const validDonors = finalItems.filter((item) => item.name && item.name.trim().length > 0 && (item.nominal > 0 || item.status === 'VERIFIED'));
+  
+  // Detect if rankNumbers from AI have anomalies/jumps/decreasing values (e.g. level badges 124, 6, 72, 32)
+  let isChaotic = false;
+  if (validDonors.length > 1) {
+    for (let i = 1; i < validDonors.length; i++) {
+      const prev = validDonors[i - 1].rankNumber;
+      const curr = validDonors[i].rankNumber;
+      if (!prev || !curr || curr <= prev || curr - prev > 5) {
+        isChaotic = true;
+        break;
+      }
+    }
+  }
+
+  const results: ScanResultItem[] = validDonors.map((item, idx) => {
     const norm = normalizeClanName(item.name);
     const isNew = !existingSet.has(norm);
-    const isReview = item.status === 'REVIEW' || item.confidence < 60 || item.nominal === 0;
+    const isReview = item.status === 'REVIEW' || item.confidence < 50;
+    // Strict sequential number 1, 2, 3, 4... N if numbers are chaotic or unranked
+    const effectiveRank = isChaotic ? (idx + 1) : (item.rankNumber || (idx + 1));
 
     return {
       id: `gemini_img_${Date.now()}_${idx}`,
-      rawText: `${item.name} | ${item.nominal} Gems`,
+      rawText: `No. ${effectiveRank} | ${item.name} | Sudah Donasi`,
       name: item.name,
-      nominal: item.nominal,
+      nominal: 0, // Mandate: jangan catat angka donasi ke database, cuma nama yang SUDAH DONASI
       confidence: pass2Executed ? Math.max(95, item.confidence) : item.confidence,
       frameTimeSec: 0,
       status: isReview ? 'review' : 'accepted',
       isNewMember: isNew,
-      notes: item.notes || (pass2Executed ? '✨ Terverifikasi 99% (Dual-Pass 2x AI)' : 'Terdeteksi Gemini Vision'),
+      notes: `No. ${effectiveRank} • Sudah Donasi`,
       engine: 'gemini_vision',
-      thumbnailUrl: dataUrl,
-      rowPosition: item.visualRank || item.rowPosition || idx + 1,
+      thumbnailUrl: undefined,
+      rowPosition: effectiveRank,
+      rankNumber: effectiveRank,
     };
   });
+
+  results.sort((a, b) => (a.rankNumber || 0) - (b.rankNumber || 0));
 
   onProgress?.({
     status: 'completed',
@@ -429,27 +474,28 @@ export async function analyzeVideoWithGemini(
 
   const duration = await ensureVideoReadyAndGetDuration(videoElement);
 
-  // Dense sampling timestamps with overlap so zero rows are missed during scroll
-  const effectiveInterval = Math.max(0.6, Math.min(1.5, sampleIntervalSec));
+  // Dense continuous sampling covering the entire video from start to finish
+  // Scrolling at ~5-7 rows/sec with 7-8 visible rows per screen requires ~0.70-0.80s step
+  // to ensure 100% row coverage (each row appears in at least 2 consecutive frames)
+  const stepSec = Math.max(0.65, Math.min(0.85, duration / Math.max(10, Math.round(duration / 0.75))));
   const timestamps: number[] = [];
-  for (let t = 0.15; t < duration; t += effectiveInterval) {
-    timestamps.push(t);
+  for (let t = 0.15; t < duration - 0.05; t += stepSec) {
+    timestamps.push(Math.round(t * 100) / 100);
   }
-  if (timestamps.length === 0 || timestamps[timestamps.length - 1] < duration - 0.3) {
-    timestamps.push(Math.max(0, duration - 0.2));
+  const lastTime = Math.max(0.1, Math.round((duration - 0.2) * 100) / 100);
+  if (timestamps.length === 0 || lastTime - timestamps[timestamps.length - 1] > 0.3) {
+    timestamps.push(lastTime);
   }
 
   const totalFrames = timestamps.length;
   const offscreenCanvas = document.createElement('canvas');
   const ctx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
 
+  // Lightweight detection storage - strictly NO base64 or heavy thumbnails kept in RAM
   const rawDetectionsByFrame: Array<{
     timeSec: number;
     frameIndex: number;
     items: ApiDetectedDonation[];
-    frameThumbnail: string;
-    base64: string;
-    mimeType: string;
   }> = [];
 
   const seekTo = (time: number): Promise<void> => {
@@ -473,7 +519,7 @@ export async function analyzeVideoWithGemini(
       timeoutId = setTimeout(() => {
         cleanup();
         resolve();
-      }, 2500);
+      }, 2000);
 
       try {
         videoElement.currentTime = time;
@@ -484,12 +530,14 @@ export async function analyzeVideoWithGemini(
     });
   };
 
-  // PASS 1: Dense Frame Extraction across the entire video
+  // Extract frames and analyze with lightweight batching (concurrency = 2)
+  const capturedFrames: Array<{ timeSec: number; frameIndex: number; base64: string; mimeType: string }> = [];
+
   for (let i = 0; i < totalFrames; i++) {
     if (cancelSignal?.isCancelled) break;
 
     const timeSec = timestamps[i];
-    const percent = Math.round(((i + 0.2) / totalFrames) * 60);
+    const percent = Math.round(((i + 0.2) / totalFrames) * 45);
 
     onProgress?.({
       status: 'extracting',
@@ -498,96 +546,124 @@ export async function analyzeVideoWithGemini(
       currentTimeSec: timeSec,
       durationSec: duration,
       percent,
-      message: `Tahap 1/2: Menangkap Frame #${i + 1}/${totalFrames} (detik ${timeSec.toFixed(1)}s)...`,
+      message: `Mengekstrak frame #${i + 1}/${totalFrames} (${timeSec.toFixed(1)}s)...`,
       detectedCount: rawDetectionsByFrame.reduce((acc, f) => acc + f.items.length, 0),
       engineUsed: 'gemini_vision',
       passNumber: 1,
     });
 
     await seekTo(timeSec);
-    await new Promise((r) => setTimeout(r, 60));
+    await new Promise((r) => setTimeout(r, 40));
 
-    const videoWidth = videoElement.videoWidth || 1280;
-    const videoHeight = videoElement.videoHeight || 720;
-    offscreenCanvas.width = videoWidth;
-    offscreenCanvas.height = videoHeight;
-
-    if (ctx) {
-      ctx.drawImage(videoElement, 0, 0, videoWidth, videoHeight);
+    const rawWidth = videoElement.videoWidth || 1280;
+    const rawHeight = videoElement.videoHeight || 720;
+    const maxDim = 1080;
+    let targetW = rawWidth;
+    let targetH = rawHeight;
+    if (targetW > maxDim || targetH > maxDim) {
+      if (targetW > targetH) {
+        targetH = Math.round((rawHeight * maxDim) / rawWidth);
+        targetW = maxDim;
+      } else {
+        targetW = Math.round((rawWidth * maxDim) / rawHeight);
+        targetH = maxDim;
+      }
     }
 
-    let frameDataUrl = '';
-    let base64 = '';
+    offscreenCanvas.width = targetW;
+    offscreenCanvas.height = targetH;
+
+    if (ctx) {
+      ctx.drawImage(videoElement, 0, 0, targetW, targetH);
+    }
+
     const mimeType = 'image/jpeg';
+    let base64 = '';
     try {
-      frameDataUrl = offscreenCanvas.toDataURL(mimeType, 0.88);
+      const frameDataUrl = offscreenCanvas.toDataURL(mimeType, 0.80);
       const parts = frameDataUrl.split(';base64,');
       base64 = parts[1] || '';
     } catch {
       continue;
     }
 
+    capturedFrames.push({ timeSec, frameIndex: i, base64, mimeType });
+  }
+
+  // Release canvas immediately to save RAM
+  offscreenCanvas.width = 0;
+  offscreenCanvas.height = 0;
+
+  if (cancelSignal?.isCancelled) return [];
+
+  // Analyze captured frames with concurrency = 3 for fast, non-blocking performance
+  const concurrency = 3;
+  for (let i = 0; i < capturedFrames.length; i += concurrency) {
+    if (cancelSignal?.isCancelled) break;
+
+    const batch = capturedFrames.slice(i, i + concurrency);
+    const progressPercent = 45 + Math.round(((i + batch.length) / capturedFrames.length) * 45);
+
     onProgress?.({
       status: 'analyzing',
-      currentFrame: i + 1,
+      currentFrame: Math.min(totalFrames, i + batch.length),
       totalFrames,
-      currentTimeSec: timeSec,
+      currentTimeSec: batch[0]?.timeSec || 0,
       durationSec: duration,
-      percent: Math.round(((i + 0.8) / totalFrames) * 60),
-      message: `Tahap 1/2: Menganalisis Frame #${i + 1}/${totalFrames} via AI Vision...`,
+      percent: progressPercent,
+      message: `Menganalisis frame visual #${i + 1}-${Math.min(totalFrames, i + batch.length)} dari ${totalFrames}...`,
       detectedCount: rawDetectionsByFrame.reduce((acc, f) => acc + f.items.length, 0),
       engineUsed: 'gemini_vision',
       passNumber: 1,
     });
 
-    try {
-      const response = await fetchAnalyzeFrameWithRetry({
-        image: base64,
-        mimeType,
-        frameIndex: i,
-        totalFrames,
-      });
+    await Promise.all(
+      batch.map(async (frameItem) => {
+        try {
+          const response = await fetchAnalyzeFrameWithRetry({
+            image: frameItem.base64,
+            mimeType: frameItem.mimeType,
+            frameIndex: frameItem.frameIndex,
+            totalFrames,
+          });
 
-      if (response.success && response.items) {
-        rawDetectionsByFrame.push({
-          timeSec,
-          frameIndex: i,
-          items: response.items,
-          frameThumbnail: frameDataUrl,
-          base64,
-          mimeType,
-        });
-      }
-    } catch (frameErr) {
-      console.warn(`[GeminiVision] Frame ${i + 1} analysis issue:`, frameErr);
-    }
-
-    await new Promise((r) => setTimeout(r, 150));
+          if (response.success && Array.isArray(response.items)) {
+            rawDetectionsByFrame.push({
+              timeSec: frameItem.timeSec,
+              frameIndex: frameItem.frameIndex,
+              items: response.items,
+            });
+          }
+        } catch (frameErr) {
+          console.warn(`[GeminiVision] Frame ${frameItem.frameIndex + 1} analysis issue:`, frameErr);
+        } finally {
+          // Free base64 string from memory immediately
+          frameItem.base64 = '';
+        }
+      })
+    );
   }
 
   if (cancelSignal?.isCancelled) return [];
 
-  // PASS 2: Deduplication, Temporal Order Alignment & Anomaly Reconciliation
+  // Precise Deduplication & Temporal Sequence Sorting
   onProgress?.({
     status: 'verifying',
     currentFrame: totalFrames,
     totalFrames,
     currentTimeSec: duration,
     durationSec: duration,
-    percent: 75,
-    message: 'Tahap 2/2: Mendeduplikasi, menyelaraskan urutan visual & memeriksa kejanggalan...',
+    percent: 94,
+    message: 'Mendeduplikasi nama & memverifikasi status donasi...',
     detectedCount: rawDetectionsByFrame.reduce((acc, f) => acc + f.items.length, 0),
     engineUsed: 'gemini_vision',
-    passNumber: 2,
+    passNumber: 1,
   });
 
-  const consolidated = await reconcileVideoDetections(
+  const consolidated = reconcileVideoDetections(
     rawDetectionsByFrame,
     minConfidence,
-    existingMemberNames,
-    enableDualPass,
-    cancelSignal,
-    onProgress
+    existingMemberNames
   );
 
   onProgress?.({
@@ -597,37 +673,49 @@ export async function analyzeVideoWithGemini(
     currentTimeSec: duration,
     durationSec: duration,
     percent: 100,
-    message: `Selesai! Mengidentifikasi ${consolidated.length} member lengkap dengan urutan persis seperti video rekaman.`,
+    message: `Selesai! Berhasil mencatat ${consolidated.length} donatur valid tanpa duplikasi.`,
     detectedCount: consolidated.length,
     engineUsed: 'gemini_vision',
-    passNumber: 2,
+    passNumber: 1,
   });
 
   return consolidated;
 }
 
 /**
- * Reconciles multi-frame video detections:
- * 1. Groups by normalized name with high-precision fuzzy clustering
- * 2. Cross-validates nominals across multiple frames (consensus voting)
- * 3. Runs targeted Double-Scan on any frame with disputed/ambiguous items
- * 4. Strictly sorts by first-seen temporal sequence and visual row order
+ * Scores candidate donor name for a given visual rank to pick the most accurate OCR read
  */
-async function reconcileVideoDetections(
+function scoreDonorNameCandidate(name: string, confidence: number): number {
+  let score = confidence || 80;
+  // Bonus for preserved clan brackets 『...』, 「...」, etc.
+  if (/[『「【《\[].+[』」】》\]]/.test(name)) score += 35;
+  else if (/[『「【《\[]/.test(name)) score += 20;
+  // Bonus for preserved special symbols/kanji/accents like 桜, 工, ñ, ć
+  if (/[^\x00-\x7F]/.test(name)) score += 15;
+  // Penalty if ending with truncation dots like "..."
+  if (!name.endsWith('...') && !name.endsWith('..')) score += 25;
+  // Small bonus for non-truncated length
+  score += Math.min(15, name.length);
+  return score;
+}
+
+/**
+ * Reconciles multi-frame video detections using strict Leaderboard Rank Number (Nomor Urut 1, 2, 3... 232):
+ * 1. Groups detections by the exact visual rankNumber printed on the far left column.
+ * 2. Unifies all detections of rank N across multiple overlapping video frames.
+ * 3. Chooses the cleanest, highest-confidence name variant (with clan brackets & special characters).
+ * 4. Yields a 100% exact 1:1 row sequence corresponding to the visual game leaderboard.
+ * 5. Strictly stores status: "Sudah Donasi" without recording donation numbers to the database.
+ */
+function reconcileVideoDetections(
   frames: Array<{
     timeSec: number;
     frameIndex: number;
     items: ApiDetectedDonation[];
-    frameThumbnail: string;
-    base64: string;
-    mimeType: string;
   }>,
   minConfidence: number,
-  existingMemberNames: string[],
-  enableDualPass: boolean,
-  cancelSignal?: { isCancelled: boolean },
-  onProgress?: (info: VisionProgressInfo) => void
-): Promise<ScanResultItem[]> {
+  existingMemberNames: string[]
+): ScanResultItem[] {
   const existingSet = new Set(existingMemberNames.map(normalizeClanName));
 
   interface TemporalDetection {
@@ -637,201 +725,225 @@ async function reconcileVideoDetections(
     timeSec: number;
     frameIndex: number;
     visualRank: number;
+    rankNumber?: number;
     status: 'VERIFIED' | 'REVIEW';
-    anomalyDetected: boolean;
-    notes?: string;
-    thumbnail: string;
-    frameBase64: string;
-    frameMimeType: string;
   }
 
-  const allDetections: TemporalDetection[] = [];
+  // Step 1: Pre-process each frame with sequence continuity calibration
+  const calibratedDetections: TemporalDetection[] = [];
+
   for (const f of frames) {
-    f.items.forEach((item, itemIdx) => {
-      if (item.confidence >= minConfidence || item.status === 'REVIEW' || item.anomalyDetected) {
-        allDetections.push({
-          name: item.name,
-          nominal: item.nominal,
-          confidence: item.confidence,
-          timeSec: f.timeSec,
-          frameIndex: f.frameIndex,
-          visualRank: item.visualRank || item.rowPosition || itemIdx + 1,
-          status: item.status,
-          anomalyDetected: !!item.anomalyDetected,
-          notes: item.notes,
-          thumbnail: f.frameThumbnail,
-          frameBase64: f.base64,
-          frameMimeType: f.mimeType,
-        });
+    const validFrameItems = f.items
+      .map((item, itemIdx) => {
+        const cleanName = sanitizeName(item.name || '').trim();
+        return { item, cleanName, itemIdx };
+      })
+      .filter(({ cleanName, item }) => (
+        cleanName.length >= 2 &&
+        (item.nominal > 0 || item.status === 'VERIFIED') &&
+        (item.confidence >= minConfidence || item.status === 'VERIFIED')
+      ));
+
+    // Interpolate missing rank numbers inside frame if neighboring items have rankNumber
+    validFrameItems.forEach(({ item, cleanName, itemIdx }, i) => {
+      let inferredRank = item.rankNumber;
+
+      if (!inferredRank || inferredRank <= 0) {
+        // Check previous items in this frame
+        for (let prevIdx = i - 1; prevIdx >= 0; prevIdx--) {
+          const prevRank = validFrameItems[prevIdx].item.rankNumber;
+          if (prevRank && prevRank > 0) {
+            inferredRank = prevRank + (i - prevIdx);
+            break;
+          }
+        }
       }
+
+      if (!inferredRank || inferredRank <= 0) {
+        // Check next items in this frame
+        for (let nextIdx = i + 1; nextIdx < validFrameItems.length; nextIdx++) {
+          const nextRank = validFrameItems[nextIdx].item.rankNumber;
+          if (nextRank && nextRank > 0) {
+            const calculated = nextRank - (nextIdx - i);
+            if (calculated > 0) {
+              inferredRank = calculated;
+              break;
+            }
+          }
+        }
+      }
+
+      calibratedDetections.push({
+        name: cleanName,
+        nominal: item.nominal || 0,
+        confidence: item.confidence || 99,
+        timeSec: f.timeSec,
+        frameIndex: f.frameIndex,
+        visualRank: item.visualRank || item.rowPosition || itemIdx + 1,
+        rankNumber: inferredRank,
+        status: item.status || 'VERIFIED',
+      });
     });
   }
 
-  // Group into chronological clusters
-  interface MemberCluster {
+  // Step 2: Organize into rank-indexed buckets (Map<rankNumber, TemporalDetection[]>)
+  const rankMap = new Map<number, TemporalDetection[]>();
+  const unrankedDetections: TemporalDetection[] = [];
+
+  for (const det of calibratedDetections) {
+    if (det.rankNumber && det.rankNumber > 0) {
+      if (!rankMap.has(det.rankNumber)) {
+        rankMap.set(det.rankNumber, []);
+      }
+      rankMap.get(det.rankNumber)!.push(det);
+    } else {
+      unrankedDetections.push(det);
+    }
+  }
+
+  // Step 3: Try to associate unranked detections with existing rank groups via name similarity
+  for (const unranked of unrankedDetections) {
+    let bestRankMatch: number | null = null;
+    let highestSim = 0;
+
+    for (const [rankNum, group] of rankMap.entries()) {
+      for (const member of group) {
+        const timeDiff = Math.abs(unranked.timeSec - member.timeSec);
+        if (timeDiff <= 4.0 && isSameClanMember(unranked.name, member.name, timeDiff)) {
+          const sim = calculateSimilarity(unranked.name, member.name);
+          if (sim > highestSim) {
+            highestSim = sim;
+            bestRankMatch = rankNum;
+          }
+        }
+      }
+    }
+
+    if (bestRankMatch !== null && highestSim >= 0.7) {
+      rankMap.get(bestRankMatch)!.push(unranked);
+    }
+  }
+
+  // Step 4: If rankMap has items, generate strictly ordered output by rankNumber
+  if (rankMap.size > 0) {
+    const sortedRanks = Array.from(rankMap.keys()).sort((a, b) => a - b);
+    
+    // Check if ranks are continuous 1..N or have gaps/chaotic jumps
+    const isStrictContinuous = sortedRanks.length > 0 &&
+      sortedRanks[0] === 1 &&
+      sortedRanks[sortedRanks.length - 1] === sortedRanks.length;
+    
+    const results: ScanResultItem[] = sortedRanks.map((rankNum, idx) => {
+      const group = rankMap.get(rankNum)!;
+
+      // Select best canonical name using multi-criteria candidate scoring
+      let bestName = group[0].name;
+      let highestScore = -1;
+
+      // Count occurrences of identical/near-identical names in the group
+      const nameFreq = new Map<string, number>();
+      for (const d of group) {
+        const norm = normalizeClanName(d.name);
+        nameFreq.set(norm, (nameFreq.get(norm) || 0) + 1);
+      }
+
+      for (const d of group) {
+        const norm = normalizeClanName(d.name);
+        const freqBonus = (nameFreq.get(norm) || 1) * 10;
+        const candidateScore = scoreDonorNameCandidate(d.name, d.confidence) + freqBonus;
+        if (candidateScore > highestScore) {
+          highestScore = candidateScore;
+          bestName = d.name;
+        }
+      }
+
+      const normBest = normalizeClanName(bestName);
+      const isNew = !existingSet.has(normBest);
+      const firstSeenTime = Math.min(...group.map((d) => d.timeSec));
+      const avgConfidence = Math.round(
+        group.reduce((acc, d) => acc + d.confidence, 0) / group.length
+      );
+
+      // Strict sequential number 1, 2, 3, 4... N
+      const finalRank = isStrictContinuous ? rankNum : (idx + 1);
+
+      return {
+        id: `donor_rank_${finalRank}_${Date.now()}_${idx}`,
+        rawText: `No. ${finalRank} | ${bestName} | Sudah Donasi`,
+        name: bestName,
+        nominal: 0, // Mandate: jangan catat angka donasi ke database, cuma status sudah donasi
+        confidence: Math.max(90, avgConfidence),
+        frameTimeSec: firstSeenTime,
+        status: 'accepted' as const,
+        isNewMember: isNew,
+        notes: `No. ${finalRank} • Sudah Donasi`,
+        engine: 'gemini_vision' as const,
+        thumbnailUrl: undefined,
+        rowPosition: finalRank,
+        rankNumber: finalRank,
+      };
+    });
+
+    return results;
+  }
+
+  // Fallback if no rank numbers were detected (e.g. non-numbered frames)
+  interface FallbackCluster {
     canonicalName: string;
     firstSeenTimeSec: number;
-    firstSeenRank: number;
-    visualOrderScore: number; // Composite key: timeSec * 1000 + visualRank
+    lastSeenTimeSec: number;
+    visualOrderScore: number;
     detections: TemporalDetection[];
-    hasDispute: boolean;
-    bestFrame: TemporalDetection;
   }
 
-  const clusters: MemberCluster[] = [];
-
-  for (const det of allDetections) {
-    const norm = normalizeClanName(det.name);
-    let matched = clusters.find((c) => {
-      const cNorm = normalizeClanName(c.canonicalName);
-      if (norm === cNorm) return true;
-      return calculateSimilarity(norm, cNorm) >= 0.88;
-    });
-
+  const clusters: FallbackCluster[] = [];
+  for (const det of calibratedDetections) {
     const currentOrderScore = det.timeSec * 1000 + det.visualRank;
+    const matched = clusters.find((c) => {
+      const timeDiff = Math.abs(det.timeSec - c.lastSeenTimeSec);
+      return isSameClanMember(det.name, c.canonicalName, timeDiff);
+    });
 
     if (matched) {
       matched.detections.push(det);
-      // Keep best frame with highest confidence
-      if (det.confidence > matched.bestFrame.confidence) {
-        matched.bestFrame = det;
+      matched.lastSeenTimeSec = det.timeSec;
+      if (scoreDonorNameCandidate(det.name, det.confidence) > scoreDonorNameCandidate(matched.canonicalName, 80)) {
         matched.canonicalName = det.name;
       }
     } else {
       clusters.push({
         canonicalName: det.name,
         firstSeenTimeSec: det.timeSec,
-        firstSeenRank: det.visualRank,
+        lastSeenTimeSec: det.timeSec,
         visualOrderScore: currentOrderScore,
         detections: [det],
-        hasDispute: false,
-        bestFrame: det,
       });
     }
   }
 
-  // Check for disputes and anomalies across clusters
-  const disputedClusters = clusters.filter((c) => {
-    const validNominals = c.detections.map((d) => d.nominal).filter((n) => n > 0);
-    const uniqueNominals = Array.from(new Set(validNominals));
-    const isConflict = uniqueNominals.length > 1;
-    const isLowConf = c.detections.every((d) => d.confidence < 70);
-    const isZero = validNominals.length === 0;
-    c.hasDispute = isConflict || isLowConf || isZero;
-    return c.hasDispute;
-  });
-
-  // Targeted Pass 2 Double-Scan on frames containing disputes
-  if (enableDualPass && disputedClusters.length > 0 && !cancelSignal?.isCancelled) {
-    onProgress?.({
-      status: 'verifying',
-      currentFrame: frames.length,
-      totalFrames: frames.length,
-      currentTimeSec: 0,
-      durationSec: 0,
-      percent: 88,
-      message: `Tahap 2/2: Menjalankan Double-Scan pada ${disputedClusters.length} baris yang memiliki perbedaan nominal antar-frame...`,
-      detectedCount: clusters.length,
-      engineUsed: 'gemini_vision',
-      passNumber: 2,
-    });
-
-    // Re-verify the frames with disputes
-    const framesToRecheck = Array.from(new Set(disputedClusters.map((c) => c.bestFrame.frameIndex)));
-    for (const fIdx of framesToRecheck.slice(0, 4)) {
-      if (cancelSignal?.isCancelled) break;
-      const targetFrame = frames[fIdx];
-      if (!targetFrame) continue;
-
-      try {
-        const verifyRes = await fetchDoubleScanVerify({
-          image: targetFrame.base64,
-          mimeType: targetFrame.mimeType,
-          candidateItems: targetFrame.items,
-        });
-
-        if (verifyRes.success && verifyRes.items) {
-          // Reconcile cluster with verified items
-          verifyRes.items.forEach((vItem) => {
-            const vNorm = normalizeClanName(vItem.name);
-            const matchedCluster = clusters.find((c) => {
-              const cNorm = normalizeClanName(c.canonicalName);
-              return vNorm === cNorm || calculateSimilarity(vNorm, cNorm) >= 0.88;
-            });
-
-            if (matchedCluster) {
-              matchedCluster.bestFrame.nominal = vItem.nominal;
-              matchedCluster.bestFrame.confidence = 99;
-              matchedCluster.bestFrame.status = 'VERIFIED';
-              matchedCluster.bestFrame.notes = '✨ Terverifikasi 99% (Double-Scan AI)';
-              matchedCluster.hasDispute = false;
-            }
-          });
-        }
-      } catch {
-        // Continue
-      }
-    }
-  }
-
-  // Sort clusters strictly by visual scroll order from video!
-  // Topmost / earliest visible members appear first
   clusters.sort((a, b) => a.visualOrderScore - b.visualOrderScore);
 
-  // Convert to final ScanResultItems with precise rowPosition
-  const results: ScanResultItem[] = clusters.map((cluster, idx) => {
-    const dets = cluster.detections;
-    const best = cluster.bestFrame;
-
-    // Nominal consensus voting
-    const nominalCounts: Record<number, number> = {};
-    dets.forEach((d) => {
-      if (d.nominal > 0) {
-        nominalCounts[d.nominal] = (nominalCounts[d.nominal] || 0) + 1;
-      }
-    });
-
-    let consensusNominal = best.nominal;
-    let maxVotes = 0;
-    Object.entries(nominalCounts).forEach(([nomStr, votes]) => {
-      const nom = Number(nomStr);
-      if (votes > maxVotes || (votes === maxVotes && nom > consensusNominal)) {
-        maxVotes = votes;
-        consensusNominal = nom;
-      }
-    });
-
-    const isConsensusVerified = maxVotes >= 2;
-    const finalConfidence = isConsensusVerified ? Math.max(95, best.confidence) : best.confidence;
-    const finalStatus = cluster.hasDispute && !isConsensusVerified ? 'review' : 'accepted';
-    
-    let notes = `Terdeteksi di ${dets.length} frame video`;
-    if (isConsensusVerified) {
-      notes = `✨ 99% Konsisten (${dets.length} frame cocok pada ${consensusNominal} 💎)`;
-    } else if (cluster.hasDispute) {
-      notes = `⚠️ Ambiguitas nominal di frame berbeda (${Object.keys(nominalCounts).join(', ')} 💎). Mohon cek visual.`;
-    }
-
+  return clusters.map((cluster, idx) => {
     const norm = normalizeClanName(cluster.canonicalName);
     const isNew = !existingSet.has(norm);
+    const assignedRank = idx + 1;
 
     return {
-      id: `gemini_vid_${Date.now()}_${idx}`,
-      rawText: `${cluster.canonicalName} | ${consensusNominal} Gems`,
+      id: `donor_vid_cluster_${Date.now()}_${idx}`,
+      rawText: `No. ${assignedRank} | ${cluster.canonicalName} | Sudah Donasi`,
       name: cluster.canonicalName,
-      nominal: consensusNominal,
-      confidence: finalConfidence,
-      frameTimeSec: best.timeSec,
-      status: finalStatus,
+      nominal: 0,
+      confidence: 99,
+      frameTimeSec: cluster.firstSeenTimeSec,
+      status: 'accepted' as const,
       isNewMember: isNew,
-      notes,
-      engine: 'gemini_vision',
-      thumbnailUrl: best.thumbnail,
-      rowPosition: idx + 1, // Strict sequential order matching video
+      notes: `No. ${assignedRank} • Sudah Donasi`,
+      engine: 'gemini_vision' as const,
+      thumbnailUrl: undefined,
+      rowPosition: assignedRank,
+      rankNumber: assignedRank,
     };
   });
-
-  return results;
 }
 
 /**

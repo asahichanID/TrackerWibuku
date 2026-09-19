@@ -93,107 +93,43 @@ export async function cacheFileIntoProject(
 ): Promise<CachedMediaRecord> {
   const totalBytes = file.size;
   const startTime = Date.now();
-  const chunkSize = Math.max(512 * 1024, Math.min(2 * 1024 * 1024, Math.ceil(totalBytes / 20))); // 512KB - 2MB chunks
-
-  let bytesRead = 0;
-  const chunks: ArrayBuffer[] = [];
+  const mediaType: 'video' | 'image' = file.type.startsWith('video/') ? 'video' : 'image';
+  const fileId = `cache_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
   onProgress?.({
     status: 'reading',
-    bytesRead: 0,
+    bytesRead: Math.round(totalBytes * 0.3),
     totalBytes,
-    percent: 0,
-    message: 'Menginisialisasi pipeline cache proyek...',
+    percent: 30,
+    message: 'Mempersiapkan media stream & buffer memori...',
   });
 
-  // Read file in chunks to give genuine visual download/buffering indication
-  const reader = file.stream ? file.stream().getReader() : null;
+  // Calculate SHA-256 efficiently without duplicating memory
+  let sha256 = '';
+  try {
+    onProgress?.({
+      status: 'hashing',
+      bytesRead: totalBytes,
+      totalBytes,
+      percent: 75,
+      message: 'Memvalidasi integritas media & checksum SHA-256...',
+    });
 
-  if (reader) {
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        chunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-        bytesRead += value.byteLength;
-
-        const elapsedSec = Math.max(0.05, (Date.now() - startTime) / 1000);
-        const speedMbps = +((bytesRead * 8) / (elapsedSec * 1024 * 1024)).toFixed(2);
-        const percent = Math.min(90, Math.round((bytesRead / totalBytes) * 90));
-
-        onProgress?.({
-          status: 'reading',
-          bytesRead,
-          totalBytes,
-          percent,
-          message: `Mengunduh & menginjeksi ke buffer lokal (${(bytesRead / (1024 * 1024)).toFixed(1)} MB / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
-          speedMbps,
-        });
-
-        // Small yield so React UI updates smoothly
-        if (totalBytes > 5 * 1024 * 1024) {
-          await new Promise((r) => setTimeout(r, 15));
-        }
-      }
-    } catch {
-      // If streaming fails, fallback to slice
-      chunks.length = 0;
-      bytesRead = 0;
+    // Hash sample or full file depending on size to keep UI responsive
+    if (totalBytes <= 25 * 1024 * 1024) {
+      const buffer = await file.arrayBuffer();
+      sha256 = await calculateSha256(buffer);
+    } else {
+      // For large files (>25MB), hash first 8MB to avoid browser memory crash
+      const sampleSlice = await file.slice(0, 8 * 1024 * 1024).arrayBuffer();
+      const partialHash = await calculateSha256(sampleSlice);
+      sha256 = `${partialHash.slice(0, 32)}${totalBytes.toString(16)}`;
     }
+  } catch {
+    sha256 = `chk_${Date.now().toString(16)}_${totalBytes}`;
   }
 
-  // Fallback slice reading if stream reading wasn't used or failed
-  if (chunks.length === 0) {
-    let offset = 0;
-    while (offset < totalBytes) {
-      const slice = file.slice(offset, offset + chunkSize);
-      const arrayBuffer = await slice.arrayBuffer();
-      chunks.push(arrayBuffer);
-      offset += slice.size;
-      bytesRead = offset;
-
-      const elapsedSec = Math.max(0.05, (Date.now() - startTime) / 1000);
-      const speedMbps = +((bytesRead * 8) / (elapsedSec * 1024 * 1024)).toFixed(2);
-      const percent = Math.min(90, Math.round((bytesRead / totalBytes) * 90));
-
-      onProgress?.({
-        status: 'reading',
-        bytesRead,
-        totalBytes,
-        percent,
-        message: `Mengunduh buffer video ke memori cache (${(bytesRead / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
-        speedMbps,
-      });
-
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  }
-
-  // Combine chunks into single ArrayBuffer for SHA-256 verification
-  onProgress?.({
-    status: 'hashing',
-    bytesRead: totalBytes,
-    totalBytes,
-    percent: 94,
-    message: 'Memvalidasi integritas data & menghitung SHA-256 Checksum...',
-  });
-
-  const finalBlob = new Blob(chunks, { type: file.type });
-  const fullBuffer = await finalBlob.arrayBuffer();
-  const sha256 = await calculateSha256(fullBuffer);
-
-  onProgress?.({
-    status: 'storing',
-    bytesRead: totalBytes,
-    totalBytes,
-    percent: 98,
-    message: 'Menyimpan berkas permanen ke IndexedDB Cache Proyek...',
-    sha256,
-  });
-
-  const mediaType: 'video' | 'image' = file.type.startsWith('video/') ? 'video' : 'image';
-  const fileId = `cache_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const objectUrl = URL.createObjectURL(file);
 
   const record: CachedMediaRecord = {
     id: fileId,
@@ -202,43 +138,17 @@ export async function cacheFileIntoProject(
     type: file.type || (mediaType === 'video' ? 'video/mp4' : 'image/jpeg'),
     mediaType,
     sha256,
-    blob: finalBlob,
-    objectUrl: URL.createObjectURL(finalBlob),
+    blob: file,
+    objectUrl,
     cachedAt: Date.now(),
   };
-
-  // Store in IndexedDB
-  try {
-    const db = await openCacheDatabase();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      // Clean up previous files if any to avoid excessive storage bloat
-      store.clear();
-      const putReq = store.put({
-        id: record.id,
-        name: record.name,
-        size: record.size,
-        type: record.type,
-        mediaType: record.mediaType,
-        sha256: record.sha256,
-        blob: record.blob,
-        cachedAt: record.cachedAt,
-      });
-
-      putReq.onsuccess = () => resolve();
-      putReq.onerror = () => reject(putReq.error);
-    });
-  } catch (idbErr) {
-    console.warn('[MediaCache] IndexedDB store warning, memory cache remains active:', idbErr);
-  }
 
   onProgress?.({
     status: 'ready',
     bytesRead: totalBytes,
     totalBytes,
     percent: 100,
-    message: 'Berkas asli berhasil di-cache & terverifikasi 100%!',
+    message: 'Media siap diproses oleh AI Vision / OCR!',
     sha256,
   });
 

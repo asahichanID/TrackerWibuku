@@ -5,7 +5,7 @@
 
 import { createWorker, Worker } from 'tesseract.js';
 import { ScanResultItem } from '../types';
-import { parseOcrLine, stringSimilarity } from './fuzzyMatching';
+import { parseOcrLine, stringSimilarity, isSameClanMember, sanitizeName } from './fuzzyMatching';
 import { captureVideoFrame, calculateFrameDifference, preprocessCanvasForOcr, PreprocessOptions } from './imagePreprocessing';
 import { ensureVideoReadyAndGetDuration } from './aiVisionEngine';
 
@@ -506,14 +506,15 @@ export function consolidateOcrResults(
   }> = [];
 
   for (const item of rawList) {
+    const cleanItemName = sanitizeName(item.name || '').trim();
+    if (cleanItemName.length < 2 || item.nominal <= 0) continue;
+
     let matchedGroup: (typeof groups)[0] | null = null;
-    let highestSim = 0;
 
     for (const group of groups) {
-      const sim = stringSimilarity(item.name, group.canonicalName);
-      if (sim > 0.82 && sim > highestSim) {
-        highestSim = sim;
+      if (isSameClanMember(cleanItemName, group.canonicalName, item.frameTimeSec - group.earliestTime)) {
         matchedGroup = group;
+        break;
       }
     }
 
@@ -521,23 +522,25 @@ export function consolidateOcrResults(
       matchedGroup.occurrences += 1;
       matchedGroup.rawTexts.push(item.rawText);
 
-      // If new item has higher confidence, update canonical name and thumbnail
+      // Prefer more complete name with clan bracket
+      if (
+        (/[『「【《\[]/.test(cleanItemName) && !/[『「【《\[]/.test(matchedGroup.canonicalName)) ||
+        (cleanItemName.length > matchedGroup.canonicalName.length && !cleanItemName.endsWith('...'))
+      ) {
+        matchedGroup.canonicalName = cleanItemName;
+      }
+
       if (item.confidence > matchedGroup.highestConfidence) {
         matchedGroup.highestConfidence = item.confidence;
-        matchedGroup.canonicalName = item.name;
         matchedGroup.thumbnailUrl = item.thumbnailUrl;
       }
 
-      // If existing nominal was 0 but new has positive nominal, adopt positive nominal
-      if (matchedGroup.bestNominal === 0 && item.nominal > 0) {
-        matchedGroup.bestNominal = item.nominal;
-      } else if (item.nominal > 0 && item.confidence >= matchedGroup.highestConfidence - 10) {
-        // Adopt the highest nominal detected with high confidence
+      if (item.nominal > 0) {
         matchedGroup.bestNominal = Math.max(matchedGroup.bestNominal, item.nominal);
       }
     } else {
       groups.push({
-        canonicalName: item.name,
+        canonicalName: cleanItemName,
         bestNominal: item.nominal,
         highestConfidence: item.confidence,
         earliestTime: item.frameTimeSec,
@@ -549,29 +552,32 @@ export function consolidateOcrResults(
   }
 
   // Convert groups into ScanResultItem
-  return groups.map((g, idx) => {
-    // Check if member already exists in database (exact or fuzzy)
-    let isExisting = false;
-    let existingNameMatch: string | undefined;
+  return groups
+    .filter((g) => g.canonicalName && g.canonicalName.length >= 2 && g.bestNominal > 0)
+    .map((g, idx) => {
+      // Check if member already exists in database (exact or fuzzy)
+      let isExisting = false;
+      let existingNameMatch: string | undefined;
 
-    for (const exName of existingMemberNames) {
-      if (stringSimilarity(g.canonicalName, exName) >= 0.88) {
-        isExisting = true;
-        existingNameMatch = exName;
-        break;
+      for (const exName of existingMemberNames) {
+        if (isSameClanMember(g.canonicalName, exName)) {
+          isExisting = true;
+          existingNameMatch = exName;
+          break;
+        }
       }
-    }
 
-    return {
-      id: `scan-item-${Date.now()}-${idx}`,
-      name: existingNameMatch || g.canonicalName,
-      nominal: g.bestNominal,
-      confidence: g.highestConfidence,
-      frameTimeSec: g.earliestTime,
-      rawText: g.rawTexts[0] || g.canonicalName,
-      status: 'accepted',
-      isNewMember: !isExisting,
-      thumbnailUrl: g.thumbnailUrl,
-    };
-  });
+      return {
+        id: `scan-item-${Date.now()}-${idx}`,
+        name: existingNameMatch || g.canonicalName,
+        nominal: g.bestNominal,
+        confidence: g.highestConfidence,
+        frameTimeSec: g.earliestTime,
+        rawText: g.rawTexts[0] || g.canonicalName,
+        status: 'accepted',
+        isNewMember: !isExisting,
+        thumbnailUrl: undefined,
+        rowPosition: idx + 1,
+      };
+    });
 }

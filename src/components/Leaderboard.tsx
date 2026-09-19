@@ -35,7 +35,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'donated' | 'pending'>('all');
-  const [sortBy, setSortBy] = useState<'nominal_desc' | 'nominal_asc' | 'name_asc' | 'name_desc' | 'latest'>('nominal_desc');
+  const [sortBy, setSortBy] = useState<'rank_asc' | 'nominal_desc' | 'nominal_asc' | 'name_asc' | 'name_desc' | 'latest'>('rank_asc');
 
   // Layout presentation mode
   const [viewMode, setViewMode] = useState<'columns_paged' | 'columns_scroll'>('columns_paged');
@@ -62,13 +62,19 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
 
     // Status filter
     if (statusFilter === 'donated') {
-      result = result.filter((m) => m.nominal > 0);
+      result = result.filter((m) => m.status === 'donated' || m.nominal > 0);
     } else if (statusFilter === 'pending') {
-      result = result.filter((m) => m.nominal === 0);
+      result = result.filter((m) => m.status === 'pending' && m.nominal === 0);
     }
 
     // Sorting
     result.sort((a, b) => {
+      if (sortBy === 'rank_asc') {
+        const rankA = a.rankNumber ?? 99999;
+        const rankB = b.rankNumber ?? 99999;
+        if (rankA !== rankB) return rankA - rankB;
+        return a.name.localeCompare(b.name);
+      }
       if (sortBy === 'nominal_desc') {
         if (b.nominal !== a.nominal) return b.nominal - a.nominal;
         return a.name.localeCompare(b.name);
@@ -335,6 +341,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
                 onChange={(e) => setSortBy(e.target.value as any)}
                 className="bg-transparent border-none focus:outline-none text-xs cursor-pointer font-semibold text-slate-800"
               >
+                <option value="rank_asc">Urut Nomor Asli (No. 1, 2, 3...)</option>
                 <option value="nominal_desc">Nominal Tertinggi</option>
                 <option value="nominal_asc">Nominal Terendah</option>
                 <option value="name_asc">Nama A → Z</option>
@@ -453,7 +460,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {columns[safeActiveColumnPage]?.members.map((member, idx) => {
-                  const rank = (columns[safeActiveColumnPage]?.startRank || 1) + idx;
+                  const rank = member.rankNumber || ((columns[safeActiveColumnPage]?.startRank || 1) + idx);
                   const isTop1 = rank === 1;
                   const isTop2 = rank === 2;
                   const isTop3 = rank === 3;
@@ -497,12 +504,14 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
                         </div>
                       </td>
 
-                      {/* Nominal */}
+                      {/* Nominal / Status Donasi */}
                       <td className="p-3.5 text-right font-mono font-extrabold">
                         {member.nominal > 0 ? (
                           <span className="text-sky-700 text-sm">
                             {formatCurrency(member.nominal, settings.currencySymbol)}
                           </span>
+                        ) : member.status === 'donated' ? (
+                          <span className="text-emerald-700 font-semibold text-xs">✓ Terverifikasi</span>
                         ) : (
                           <span className="text-slate-400 font-normal">Belum Donasi</span>
                         )}
@@ -510,7 +519,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
 
                       {/* Status */}
                       <td className="p-3.5 text-center">
-                        {member.nominal > 0 ? (
+                        {member.status === 'donated' || member.nominal > 0 ? (
                           <span className="inline-block px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
                             Sudah Donasi
                           </span>
@@ -562,7 +571,7 @@ export const Leaderboard: React.FC<LeaderboardProps> = ({ setActiveTab }) => {
               {/* Column List (Max 100 items vertical) */}
               <div className="divide-y divide-slate-100 overflow-y-auto max-h-[700px]">
                 {col.members.map((member, mIdx) => {
-                  const rank = col.startRank + mIdx;
+                  const rank = member.rankNumber || (col.startRank + mIdx);
                   return (
                     <div
                       key={member.id}

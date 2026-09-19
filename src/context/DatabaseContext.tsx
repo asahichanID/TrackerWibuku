@@ -6,7 +6,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { AppSettings, Member, ScanResultItem, ScanSession } from '../types';
-import { stringSimilarity } from '../utils/fuzzyMatching';
+import { isSameClanMember, stringSimilarity } from '../utils/fuzzyMatching';
 
 interface DatabaseContextType {
   members: Member[];
@@ -78,6 +78,7 @@ function sanitizeSessionsForStorage(sessions: ScanSession[]): ScanSession[] {
         notes: item.notes,
         engine: item.engine,
         rowPosition: item.rowPosition,
+        rankNumber: item.rankNumber,
         previousNominal: item.previousNominal,
         thumbnailUrl: undefined, // strip large base64 image
       };
@@ -169,14 +170,15 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Derived real-time statistics
   const totalMembers = members.length;
-  const donatedCount = members.filter((m) => m.nominal > 0).length;
-  const pendingCount = totalMembers - donatedCount;
+  const donatedCount = members.filter((m) => m.status === 'donated' || m.nominal > 0).length;
+  const pendingCount = members.filter((m) => m.status === 'pending' && (!m.nominal || m.nominal === 0)).length;
   const totalNominal = members.reduce((sum, m) => sum + (m.nominal || 0), 0);
   const donationPercentage = totalMembers > 0 ? Math.round((donatedCount / totalMembers) * 100) : 0;
 
   /**
    * Save confirmed OCR results to database
    * Updates existing members, inserts new members, and records session history
+   * MANDATE: Do NOT record donation numbers to database, only member names who HAVE DONATED (status: 'donated')
    */
   const saveScanResults = (
     sessionMeta: Omit<ScanSession, 'items' | 'membersDetectedCount' | 'newMembersCount' | 'updatedMembersCount' | 'totalNominalScanned'>,
@@ -188,23 +190,25 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     let newCount = 0;
     let updatedCount = 0;
-    let totalScannedNominal = 0;
 
     const updatedMembers = [...members];
 
     for (const item of validItems) {
-      totalScannedNominal += item.nominal;
+      const itemRank = item.rankNumber || item.rowPosition;
 
-      // Find existing member by fuzzy match or exact match
-      const existingIdx = updatedMembers.findIndex((m) => {
-        if (m.name.toLowerCase() === item.name.toLowerCase()) return true;
-        return stringSimilarity(m.name, item.name) >= settings.fuzzyMatchThreshold;
-      });
+      // Find existing member by rankNumber first if both have it, or fallback to name matching
+      let existingIdx = -1;
+      if (itemRank) {
+        existingIdx = updatedMembers.findIndex((m) => m.rankNumber === itemRank);
+      }
+      if (existingIdx === -1) {
+        existingIdx = updatedMembers.findIndex((m) => isSameClanMember(m.name, item.name));
+      }
 
       const historyEntry = {
         scanId: sessionMeta.id,
         timestamp: nowIso,
-        nominalDetected: item.nominal,
+        nominalDetected: 0, // Mandate: jangan catat angka donasi, cuma nama yang SUDAH DONASI
         confidence: item.confidence,
         frameTimeSec: item.frameTimeSec,
         fileName: sessionMeta.fileName,
@@ -213,40 +217,47 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       };
 
       if (existingIdx >= 0) {
-        // Update existing member
+        // Update existing member status to donated
         const existing = updatedMembers[existingIdx];
-        const newNominal =
-          updateMode === 'accumulate'
-            ? existing.nominal + item.nominal
-            : item.nominal > 0
-            ? item.nominal
-            : existing.nominal;
 
         updatedMembers[existingIdx] = {
           ...existing,
-          nominal: newNominal,
-          status: newNominal > 0 ? 'donated' : 'pending',
+          name: item.name.length >= existing.name.length ? item.name : existing.name,
+          nominal: 0, // Mandate: tidak mencatat angka donasi ke database
+          status: 'donated', // Cuma nama yang SUDAH DONASI
           lastDetectedAt: nowIso,
-          donationCount: existing.donationCount + (item.nominal > 0 ? 1 : 0),
+          donationCount: existing.donationCount + 1,
+          rankNumber: itemRank || existing.rankNumber,
           history: [historyEntry, ...existing.history],
+          notes: itemRank ? `No. ${itemRank} • Sudah Donasi` : 'Sudah Donasi',
         };
         updatedCount++;
       } else {
-        // Insert new member
+        // Insert new member with status 'donated'
         const newMember: Member = {
           id: `member-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
           name: item.name,
-          nominal: item.nominal,
-          status: item.nominal > 0 ? 'donated' : 'pending',
+          nominal: 0, // Mandate: jangan catat angka donasi ke database
+          status: 'donated', // Cuma nama yang SUDAH DONASI
           firstDetectedAt: nowIso,
           lastDetectedAt: nowIso,
-          donationCount: item.nominal > 0 ? 1 : 0,
+          donationCount: 1,
+          rankNumber: itemRank,
           history: [historyEntry],
+          notes: itemRank ? `No. ${itemRank} • Sudah Donasi` : 'Sudah Donasi',
         };
         updatedMembers.push(newMember);
         newCount++;
       }
     }
+
+    // Keep members sorted by official rank number (1, 2, ..., 232)
+    updatedMembers.sort((a, b) => {
+      if (a.rankNumber && b.rankNumber) return a.rankNumber - b.rankNumber;
+      if (a.rankNumber) return -1;
+      if (b.rankNumber) return 1;
+      return 0;
+    });
 
     // Save full scan session record
     const fullSession: ScanSession = {
@@ -254,8 +265,12 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       membersDetectedCount: validItems.length,
       newMembersCount: newCount,
       updatedMembersCount: updatedCount,
-      totalNominalScanned: totalScannedNominal,
-      items: validItems,
+      totalNominalScanned: 0, // Angka donasi tidak dicatat
+      items: validItems.map((item) => ({
+        ...item,
+        nominal: 0, // Angka donasi tidak dicatat ke database
+        notes: 'Sudah Donasi',
+      })),
     };
 
     setMembers(updatedMembers);
@@ -264,7 +279,7 @@ export const DatabaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return {
       newCount,
       updatedCount,
-      totalScannedNominal,
+      totalScannedNominal: 0,
     };
   };
 

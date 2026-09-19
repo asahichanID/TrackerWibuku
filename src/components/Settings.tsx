@@ -1,14 +1,9 @@
 import React, { useRef, useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { useDatabase } from '../context/DatabaseContext';
+import { useBackgroundJobs } from '../context/BackgroundJobContext';
 import { ActiveTab } from '../types';
 import { formatCurrency } from '../utils/fuzzyMatching';
-import { DENO_SERVER_CODE } from '../data/denoCode';
-import {
-  BACKEND_STORAGE_KEY,
-  API_KEY_STORAGE_KEY,
-  testBackendConnection
-} from '../utils/backgroundJobApi';
 import {
   Settings as SettingsIcon,
   Heart,
@@ -25,12 +20,11 @@ import {
   Database,
   Info,
   Server,
-  Code2,
-  Copy,
-  ExternalLink,
   Zap,
   Activity,
-  AlertTriangle
+  ShieldCheck,
+  Check,
+  Clock
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -49,6 +43,8 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
     importDatabaseJson,
   } = useDatabase();
 
+  const { activeJobs, completedJobs } = useBackgroundJobs();
+
   // Form State
   const [clanName, setClanName] = useState(settings.clanName);
   const [reportTitle, setReportTitle] = useState(settings.reportTitle);
@@ -56,17 +52,6 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   const [targetDonation, setTargetDonation] = useState(settings.targetDonation);
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol || '💎');
   const [minConfidence, setMinConfidence] = useState(settings.minConfidence || 50);
-
-  // Custom Deno Backend State
-  const [customBackendUrl, setCustomBackendUrl] = useState(() => {
-    return localStorage.getItem(BACKEND_STORAGE_KEY) || settings.customBackendUrl || '';
-  });
-  const [geminiApiKey, setGeminiApiKey] = useState(() => {
-    return localStorage.getItem(API_KEY_STORAGE_KEY) || settings.geminiApiKey || '';
-  });
-  const [testStatus, setTestStatus] = useState<{ testing: boolean; result?: { ok: boolean; message: string; details?: any } }>({ testing: false });
-  const [copiedDenoCode, setCopiedDenoCode] = useState(false);
-  const [showDenoCodeModal, setShowDenoCodeModal] = useState(false);
 
   // Manual Add Form
   const [manualName, setManualName] = useState('');
@@ -83,46 +68,17 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const cleanBackendUrl = customBackendUrl.trim().replace(/\/+$/, '');
-    const cleanApiKey = geminiApiKey.trim();
-
-    if (cleanBackendUrl) {
-      localStorage.setItem(BACKEND_STORAGE_KEY, cleanBackendUrl);
-    } else {
-      localStorage.removeItem(BACKEND_STORAGE_KEY);
-    }
-
-    if (cleanApiKey) {
-      localStorage.setItem(API_KEY_STORAGE_KEY, cleanApiKey);
-    } else {
-      localStorage.removeItem(API_KEY_STORAGE_KEY);
-    }
-
     updateSettings({
       clanName: clanName.trim() || 'CLAN WIBU',
       reportTitle: reportTitle.trim() || 'LAPORAN DONASI',
       creatorCredit: creatorCredit.trim() || 'Shiro Anna',
       targetDonation: Math.max(0, targetDonation),
-      currencySymbol: currencySymbol.trim() || 'Rp',
+      currencySymbol: currencySymbol.trim() || '💎',
       minConfidence,
-      customBackendUrl: cleanBackendUrl,
-      geminiApiKey: cleanApiKey,
     });
 
     setSaveSuccessMsg(true);
     setTimeout(() => setSaveSuccessMsg(false), 3000);
-  };
-
-  const handleTestBackend = async () => {
-    setTestStatus({ testing: true });
-    const res = await testBackendConnection(customBackendUrl.trim(), geminiApiKey.trim());
-    setTestStatus({ testing: false, result: res });
-  };
-
-  const handleCopyDenoCode = () => {
-    navigator.clipboard.writeText(DENO_SERVER_CODE);
-    setCopiedDenoCode(true);
-    setTimeout(() => setCopiedDenoCode(false), 3000);
   };
 
   // Add Manual Member
@@ -199,7 +155,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           </h2>
         </div>
         <p className="text-slate-500 text-sm mt-1">
-          Kelola konfigurasi Clan Wibu, parameter pemrosesan OCR, input data manual, dan manajemen pencadangan data nyata.
+          Kelola konfigurasi Clan Wibu, status pemrosesan realtime latar belakang lokal, input data manual, dan cadangan database.
         </p>
       </div>
 
@@ -224,8 +180,65 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
         </div>
 
         <div className="text-right text-xs text-slate-500 space-y-1">
-          <p className="font-semibold text-slate-700">Versi 1.0 (2D Anime Clean Engine)</p>
-          <p>Tesseract Web Worker • HTML5 Canvas API</p>
+          <p className="font-semibold text-slate-700">Versi 3.5 (AI Vision Scraper &amp; Local Engine)</p>
+          <p>Realtime Background • 0 API Key Required</p>
+        </div>
+      </div>
+
+      {/* Local Background Engine Status Card */}
+      <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+          <div className="flex items-center space-x-2">
+            <Server className="w-5 h-5 text-indigo-600" />
+            <h3 className="font-bold text-base text-slate-800">
+              Status Server &amp; Realtime Background Lokal
+            </h3>
+          </div>
+          <span className="inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Online &amp; Aktif</span>
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/60">
+            <span className="text-slate-500 block mb-1 font-semibold">Engine Pemrosesan</span>
+            <div className="font-extrabold text-slate-800 flex items-center gap-1.5">
+              <Zap className="w-4 h-4 text-amber-500" />
+              <span>Vision Scraper 3.5</span>
+            </div>
+            <span className="text-[11px] text-slate-400 mt-1 block">Tanpa API key dari user</span>
+          </div>
+
+          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/60">
+            <span className="text-slate-500 block mb-1 font-semibold">Tugas Berjalan (Active)</span>
+            <div className="font-extrabold text-indigo-600 flex items-center gap-1.5 text-sm">
+              <Activity className="w-4 h-4 text-indigo-500" />
+              <span>{activeJobs.length} Job Aktif</span>
+            </div>
+            <span className="text-[11px] text-slate-400 mt-1 block">Tetap jalan saat tab ditutup</span>
+          </div>
+
+          <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/60">
+            <span className="text-slate-500 block mb-1 font-semibold">Riwayat Selesai</span>
+            <div className="font-extrabold text-emerald-600 flex items-center gap-1.5 text-sm">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              <span>{completedJobs.length} Job Selesai</span>
+            </div>
+            <span className="text-[11px] text-slate-400 mt-1 block">Tersimpan di database lokal</span>
+          </div>
+        </div>
+
+        <div className="bg-indigo-50/70 border border-indigo-200/80 rounded-xl p-3.5 text-xs text-indigo-900 flex items-start space-x-2.5">
+          <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="font-bold text-indigo-950">
+              Pemrosesan Realtime Latar Belakang Mandiri
+            </p>
+            <p className="text-[11px] text-indigo-800 leading-relaxed">
+              Saat Anda memproses video atau foto donasi, antrean berjalan di background server lokal. Anda dapat menutup halaman web, beralih aplikasi, atau bermain game tanpa khawatir progres terhenti atau terulang kembali.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -295,7 +308,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           {/* Currency Symbol */}
           <div>
             <label className="font-semibold text-slate-700 block mb-1.5">
-              Simbol Mata Uang
+              Simbol Donasi (Gems / Kristal)
             </label>
             <input
               type="text"
@@ -322,94 +335,6 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           </div>
         </div>
 
-        {/* Custom Deno / Backend API Section */}
-        <div className="pt-5 border-t border-slate-100 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <Server className="w-4 h-4 text-indigo-600" />
-              <h4 className="font-bold text-sm text-slate-800">
-                Koneksi Backend Realtime (Deno Deploy / Deno Playground)
-              </h4>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowDenoCodeModal(true)}
-              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs border border-indigo-200 transition-colors"
-            >
-              <Code2 className="w-3.5 h-3.5" />
-              <span>Lihat &amp; Salin Kode Deno</span>
-            </button>
-          </div>
-
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Jika ingin memproses video donasi di server terpisah (Deno Deploy / Deno Playground), masukkan URL endpoint server Deno Anda di bawah ini:
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="font-semibold text-slate-700 block mb-1.5 text-xs">
-                Custom Deno Backend URL (Opsional)
-              </label>
-              <input
-                type="url"
-                placeholder="https://contoh-clan-wibu.deno.dev"
-                value={customBackendUrl}
-                onChange={(e) => setCustomBackendUrl(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-indigo-500 font-mono text-slate-800 text-xs"
-              />
-              <span className="text-[11px] text-slate-400 mt-1 block">
-                Biarkan kosong jika menggunakan server internal bawaan aplikasi.
-              </span>
-            </div>
-
-            <div>
-              <label className="font-semibold text-slate-700 block mb-1.5 text-xs">
-                Gemini API Key (Opsional untuk Deno)
-              </label>
-              <input
-                type="password"
-                placeholder="AIzaSy..."
-                value={geminiApiKey}
-                onChange={(e) => setGeminiApiKey(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-indigo-500 font-mono text-slate-800 text-xs"
-              />
-              <span className="text-[11px] text-slate-400 mt-1 block">
-                Dikirim via header <code>x-gemini-key</code> ke server Deno.
-              </span>
-            </div>
-          </div>
-
-          {/* Test Connection Button & Result */}
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button
-              type="button"
-              onClick={handleTestBackend}
-              disabled={testStatus.testing}
-              className="inline-flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-colors disabled:opacity-50"
-            >
-              <Activity className={`w-3.5 h-3.5 ${testStatus.testing ? 'animate-spin' : ''}`} />
-              <span>{testStatus.testing ? 'Menguji Koneksi...' : 'Tes Koneksi Backend'}</span>
-            </button>
-
-            {testStatus.result && (
-              <div
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center space-x-1.5 ${
-                  testStatus.result.ok
-                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                    : 'bg-rose-50 text-rose-800 border border-rose-200'
-                }`}
-              >
-                {testStatus.result.ok ? (
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                ) : (
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                )}
-                <span>{testStatus.result.message}</span>
-              </div>
-            )}
-          </div>
-        </div>
-
         {/* Save Button */}
         <div className="flex items-center justify-between pt-3 border-t border-slate-100">
           {saveSuccessMsg ? (
@@ -418,110 +343,19 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
               <span>Pengaturan berhasil disimpan!</span>
             </span>
           ) : (
-            <span className="text-xs text-slate-400">Perubahan akan langsung diterapkan.</span>
+            <span className="text-xs text-slate-400">Perubahan akan langsung diterapkan ke seluruh sistem.</span>
           )}
 
           <button
             type="submit"
             id="save-settings-btn"
-            className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-md shadow-sky-200 transition-all"
+            className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-md shadow-sky-200 transition-all cursor-pointer"
           >
             <Save className="w-4 h-4" />
             <span>Simpan Pengaturan</span>
           </button>
         </div>
       </form>
-
-      {/* Deno Deploy / Playground Code Modal */}
-      {showDenoCodeModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-in max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center space-x-2">
-                <Code2 className="w-5 h-5 text-indigo-600" />
-                <h3 className="font-extrabold text-base text-slate-900">
-                  Kode Backend Standalone Deno Playground &amp; Deploy
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowDenoCodeModal(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Quick Steps */}
-            <div className="bg-indigo-50/80 border border-indigo-200 rounded-xl p-3.5 text-xs text-indigo-950 space-y-1.5">
-              <span className="font-bold block text-indigo-900">🚀 4 Langkah Menjalankan di Deno:</span>
-              <ol className="list-decimal list-inside space-y-1 text-indigo-900 font-medium">
-                <li>
-                  Buka{' '}
-                  <a
-                    href="https://play.deno.land"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-bold underline text-indigo-700 inline-flex items-center gap-0.5"
-                  >
-                    play.deno.land <ExternalLink className="w-3 h-3" />
-                  </a>{' '}
-                  atau{' '}
-                  <a
-                    href="https://dash.deno.com"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-bold underline text-indigo-700 inline-flex items-center gap-0.5"
-                  >
-                    dash.deno.com <ExternalLink className="w-3 h-3" />
-                  </a>.
-                </li>
-                <li>Klik tombol <strong>"Salin Kode Deno (main.ts)"</strong> di bawah, lalu paste ke editor Deno.</li>
-                <li>Deploy / Run project Deno Anda untuk mendapatkan URL publik (misal <code>https://clan-api.deno.dev</code>).</li>
-                <li>Salin link tersebut dan tempelkan ke kolom <strong>"Custom Deno Backend URL"</strong> di atas.</li>
-              </ol>
-            </div>
-
-            {/* Code Block Container */}
-            <div className="relative flex-1 min-h-0 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-4 py-2 bg-slate-800/80 border-b border-slate-700 text-xs text-slate-300">
-                <span className="font-mono">main.ts (Deno Server)</span>
-                <button
-                  type="button"
-                  onClick={handleCopyDenoCode}
-                  className="inline-flex items-center space-x-1 px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition-colors"
-                >
-                  {copiedDenoCode ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Tersalin!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Salin Semua Kode</span>
-                    </>
-                  )}
-                </button>
-              </div>
-              <pre className="p-4 overflow-y-auto text-[11px] font-mono text-slate-200 leading-relaxed whitespace-pre select-all">
-                {DENO_SERVER_CODE}
-              </pre>
-            </div>
-
-            <div className="pt-2 flex items-center justify-between">
-              <span className="text-xs text-slate-400">0 Dependensi eksternal, langsung jalan natively di Deno.</span>
-              <button
-                type="button"
-                onClick={() => setShowDenoCodeModal(false)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
-              >
-                Tutup
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Manual Member Input Form */}
       <form onSubmit={handleAddManual} className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
@@ -531,7 +365,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
         </div>
 
         <p className="text-xs text-slate-500">
-          Tambahkan member secara manual jika ada donatur yang ingin dicatat di luar pemindaian video.
+          Tambahkan member secara manual jika ada donatur yang ingin dicatat di luar pemindaian video/foto.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
@@ -542,19 +376,19 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
               placeholder="Contoh: Kirito_Wibu"
               value={manualName}
               onChange={(e) => setManualName(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs"
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs font-medium"
               required
             />
           </div>
 
           <div>
-            <label className="font-semibold text-slate-700 block mb-1">Nominal Donasi</label>
+            <label className="font-semibold text-slate-700 block mb-1">Nominal Donasi Gems</label>
             <input
               type="text"
-              placeholder="Contoh: 100.000"
+              placeholder="Contoh: 1.000"
               value={manualNominal}
               onChange={(e) => setManualNominal(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs font-mono"
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs font-mono font-bold"
             />
           </div>
 
@@ -562,10 +396,10 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
             <label className="font-semibold text-slate-700 block mb-1">Catatan (Opsional)</label>
             <input
               type="text"
-              placeholder="Contoh: Donasi transfer manual"
+              placeholder="Contoh: Donasi manual transfer gems"
               value={manualNotes}
               onChange={(e) => setManualNotes(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs"
+              className="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 text-xs font-medium"
             />
           </div>
         </div>
@@ -573,7 +407,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
         <div className="pt-2 flex justify-end">
           <button
             type="submit"
-            className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-200 transition-all"
+            className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-200 transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Tambahkan ke Database</span>
@@ -598,7 +432,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           <button
             type="button"
             onClick={handleExportBackup}
-            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors"
+            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors cursor-pointer"
           >
             <Download className="w-4 h-4 text-sky-600" />
             <span>Download Backup JSON</span>
@@ -615,7 +449,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors"
+            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition-colors cursor-pointer"
           >
             <Upload className="w-4 h-4 text-indigo-600" />
             <span>Pulihkan / Impor JSON</span>
@@ -625,7 +459,7 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
           <button
             type="button"
             onClick={() => setShowClearConfirm(true)}
-            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-colors ml-auto"
+            className="inline-flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-colors ml-auto cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
             <span>Kosongkan Database</span>
@@ -645,21 +479,21 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Tindakan ini akan menghapus seluruh data <strong className="text-slate-800">{members.length} member</strong> dan riwayat pemindaian video. Aplikasi akan kembali ke status bersih (&quot;Belum ada riwayat donasi&quot;).
+              Tindakan ini akan menghapus seluruh data <strong className="text-slate-800">{members.length} member</strong> dan riwayat pemindaian video/foto. Aplikasi akan kembali ke status bersih.
             </p>
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-end space-x-2">
               <button
                 type="button"
                 onClick={() => setShowClearConfirm(false)}
-                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs"
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs cursor-pointer"
               >
                 Batal
               </button>
               <button
                 type="button"
                 onClick={handleConfirmClear}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md shadow-rose-200"
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md shadow-rose-200 cursor-pointer"
               >
                 Ya, Hapus Semua Data
               </button>
