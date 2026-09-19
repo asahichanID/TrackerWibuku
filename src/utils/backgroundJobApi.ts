@@ -1,7 +1,29 @@
 import { BackgroundJob, ScanResultItem } from '../types';
 
+function getCustomBaseUrl(): string {
+  try {
+    const direct = localStorage.getItem('custom_vision_api_url');
+    if (direct && direct.trim()) return direct.trim().replace(/\/+$/, '');
+    const settingsStr = localStorage.getItem('clan_wibu_settings_v1');
+    if (settingsStr) {
+      const parsed = JSON.parse(settingsStr);
+      if (parsed.customApiUrl && parsed.customApiUrl.trim()) {
+        return parsed.customApiUrl.trim().replace(/\/+$/, '');
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
 function buildApiUrl(endpoint: string): string {
-  return endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const custom = getCustomBaseUrl();
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  if (custom) {
+    return `${custom}${cleanEndpoint}`;
+  }
+  return cleanEndpoint;
 }
 
 export interface CreateJobPayload {

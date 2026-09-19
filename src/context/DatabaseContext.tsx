@@ -52,6 +52,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   targetDonation: 50000,
   currencySymbol: '💎',
   canvasTheme: 'anime-sky',
+  customApiUrl: '',
 };
 
 /**

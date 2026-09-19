@@ -69,6 +69,7 @@ export interface AppSettings {
   targetDonation: number; // e.g. 5000000
   currencySymbol: string; // e.g. "Rp"
   canvasTheme: 'anime-sky' | 'sakura' | 'night-sky' | 'clean-white';
+  customApiUrl?: string; // e.g. https://your-deno-app.deno.dev or Deno Playground URL
 }
 
 export type JobStatus = 'queued' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';

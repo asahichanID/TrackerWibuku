@@ -117,12 +117,17 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
       }
     }
     
-    // Multi-model failover hierarchy with prioritized production-ready models
+    // Multi-model failover hierarchy with prioritized production-ready models (Gemini 3 Flash series & latest backups)
     const candidateModels = [
       "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
       "gemini-flash-latest",
       "gemini-3.1-flash-lite",
       "gemini-3.1-pro-preview",
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
     ];
 
     let lastError: any = null;

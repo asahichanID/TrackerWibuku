@@ -7,14 +7,45 @@
 import { ScanResultItem } from '../types';
 import { stringSimilarity, sanitizeName, isSameClanMember } from './fuzzyMatching';
 
+function getCustomBaseUrl(): string {
+  try {
+    const direct = localStorage.getItem('custom_vision_api_url');
+    if (direct && direct.trim()) return direct.trim().replace(/\/+$/, '');
+    const settingsStr = localStorage.getItem('clan_wibu_settings_v1');
+    if (settingsStr) {
+      const parsed = JSON.parse(settingsStr);
+      if (parsed.customApiUrl && parsed.customApiUrl.trim()) {
+        return parsed.customApiUrl.trim().replace(/\/+$/, '');
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
 function buildVisionUrl(endpoint: string): string {
-  return endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const custom = getCustomBaseUrl();
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  if (custom) {
+    return `${custom}${cleanEndpoint}`;
+  }
+  return cleanEndpoint;
 }
 
 function getVisionHeaders(): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
+  try {
+    const customKey = localStorage.getItem('custom_gemini_key');
+    if (customKey && customKey.trim()) {
+      headers['x-gemini-api-key'] = customKey.trim();
+    }
+  } catch {
+    // ignore
+  }
+  return headers;
 }
 
 function normalizeClanName(str: string): string {
