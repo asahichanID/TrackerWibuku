@@ -138,42 +138,48 @@ export function findBestMatchingMember(
 /**
  * Parse nominal donation from string
  * Handles gems/crystals/diamond units and numbers:
- * 500 gems, 500 Gems, 1000 Kristal, 50k gems, 1.5k 💎, 💎 500, 250 dm, 1000, 50.000, etc.
+ * 27,0K, 15.1K, 500 gems, 500 Gems, 1000 Kristal, 50k gems, 1.5k 💎, 💎 27,0K, 250 dm, 1.000, 50.000, etc.
+ * Avoids misidentifying standalone rank/level numbers like '1', '2', '21' as nominal.
  */
 export function parseNominal(str: string): number | null {
   if (!str) return null;
-  // Replace gem emoji with word
-  const clean = str.trim().toLowerCase().replace(/💎/g, ' gems ');
+  const clean = str.trim();
 
-  // Pattern with 'k' / 'rb' / 'ribu' with optional gems/kristal (e.g., 50k, 50.5k gems, 50rb kristal)
-  const kMatch = clean.match(/([\d.,]+)\s*(?:k|rb|ribu)\s*(?:gems?|kristal|crystals?|dm|diamond)?\b/);
-  if (kMatch) {
-    const num = parseFloat(kMatch[1].replace(/,/g, '.'));
-    if (!isNaN(num)) return Math.round(num * 1000);
-  }
-
-  // Pattern with 'jt' / 'juta' / 'm' (e.g. 1jt gems, 1.5m)
-  const jtMatch = clean.match(/([\d.,]+)\s*(?:jt|juta|m|mil|million)\s*(?:gems?|kristal|crystals?|dm|diamond)?\b/);
-  if (jtMatch) {
-    const num = parseFloat(jtMatch[1].replace(/,/g, '.'));
-    if (!isNaN(num)) return Math.round(num * 1000000);
-  }
-
-  // Pattern with explicit gems / kristal / diamond / dm / crystal units (e.g. 500 gems, 1000 kristal, 250 dm)
-  const gemMatch = clean.match(/(?:gems?|kristal|crystals?|diamond|dm)?\s*([\d]{1,3}(?:[.,]\d{3})+|\d+)\s*(?:gems?|kristal|crystals?|diamond|dm)?/);
-  if (gemMatch && gemMatch[1]) {
-    const rawDigits = gemMatch[1];
-    let normalized = rawDigits;
-    if (rawDigits.includes('.') && !rawDigits.includes(',')) {
-      normalized = rawDigits.replace(/\./g, '');
-    } else if (rawDigits.includes(',') && !rawDigits.includes('.')) {
-      normalized = rawDigits.replace(/,/g, '');
-    } else if (rawDigits.includes('.') && rawDigits.includes(',')) {
-      normalized = rawDigits.split(',')[0].replace(/\./g, '');
+  // Pattern with 'k' / 'rb' / 'ribu' / 'm' / 'jt' (e.g. 27,0K, 15,1K, 50k, 50rb, 1.5M, 💎 27,0K)
+  const suffixMatch = clean.match(/(?:💎\s*)?([\d.,]+)\s*(k|rb|ribu|m|mil|million|jt|juta)\s*(?:gems?|kristal|crystals?|dm|diamond)?\b/i);
+  if (suffixMatch) {
+    const rawVal = parseFloat(suffixMatch[1].replace(/,/g, '.'));
+    const unit = suffixMatch[2].toLowerCase();
+    if (!isNaN(rawVal)) {
+      if (['m', 'mil', 'million', 'jt', 'juta'].includes(unit)) {
+        return Math.round(rawVal * 1000000);
+      }
+      return Math.round(rawVal * 1000);
     }
+  }
 
-    const val = parseInt(normalized, 10);
+  // Pattern with explicit currency keywords (gems, kristal, crystals, diamond, dm, 💎)
+  const explicitMatch = clean.match(/(?:💎\s*|gems?|kristal|crystals?|diamond|dm)\s*([\d.,]+)|([\d.,]+)\s*(?:💎|gems?|kristal|crystals?|diamond|dm)/i);
+  if (explicitMatch) {
+    const rawDigits = explicitMatch[1] || explicitMatch[2];
+    const normalized = rawDigits.replace(/\./g, '').replace(/,/g, '.');
+    const val = parseFloat(normalized);
     if (!isNaN(val) && val > 0 && val <= 1000000000) {
+      return Math.round(val);
+    }
+  }
+
+  // Standalone formatted thousands number e.g. '27.000', '1.000', '1,000' OR isolated 3+ digit number (>= 50)
+  const standaloneMatch = clean.match(/^[\s💎]*([\d]{1,3}(?:[.,]\d{3})+|\d{3,7})[\s💎]*$/);
+  if (standaloneMatch) {
+    const rawDigits = standaloneMatch[1];
+    const cleaned = rawDigits.includes('.') && !rawDigits.includes(',')
+      ? rawDigits.replace(/\./g, '')
+      : rawDigits.includes(',') && !rawDigits.includes('.')
+      ? rawDigits.replace(/,/g, '')
+      : rawDigits.replace(/[.,]/g, '');
+    const val = parseInt(cleaned, 10);
+    if (!isNaN(val) && val >= 50 && val <= 1000000000) {
       return val;
     }
   }
@@ -183,76 +189,47 @@ export function parseNominal(str: string): number | null {
 
 /**
  * Clean OCR raw line and extract Candidate Name + Nominal
+ * Preserves clan brackets 『』, hyphens in nick (e.g. 『緒』 - rzkyfhrzi.), and special characters.
  */
 export function parseOcrLine(line: string): { name: string; nominal: number; confidenceBonus: number } | null {
   if (!line || line.trim().length < 3) return null;
 
-  // Remove common UI noise artifacts like bullet points, icons, timestamps, rank prefixes like "1.", "No. 1", "#1"
   let cleanLine = line
     .replace(/^[\s\d#№]+[.)\-:|]\s*/, '') // Remove starting list numbering e.g. "1. ", "01 - "
-    .replace(/[\[\]{}()]/g, ' ')
     .trim();
 
-  // Try parsing nominal from right side or after separator
-  // Separators: ":", "-", "|", "=", "💎", "Gems", "gems", "Kristal", "kristal", "donasi", tab, or multiple spaces
-  const separators = [':', ' - ', ' | ', ' = ', ' 💎 ', ' gems ', ' Gems ', ' kristal ', ' Kristal ', ' donasi ', '\t'];
-  
-  let foundName = '';
-  let foundNominal: number | null = null;
+  // Try extracting trailing currency / nominal e.g. "『緒』 - rzkyfhrzi. 27,0K" or "Shiro Anna 500 Gems"
+  const trailingMatch = cleanLine.match(/^(.*?)(?:[\s|:–—]+)((?:💎\s*)?[\d.,]+[kKmM]\b|(?:💎\s*)?[\d.,]+\s*(?:gems?|kristal|crystals?|dm|diamond)|\b[\d]{1,3}(?:\.\d{3})+\b|\b\d{3,6}\b)\s*$/i);
+  if (trailingMatch) {
+    const candidateName = trailingMatch[1].trim();
+    const candidateNomStr = trailingMatch[2].trim();
+    const nom = parseNominal(candidateNomStr);
+    if (nom !== null && nom > 0) {
+      const finalName = sanitizeName(candidateName);
+      if (finalName.length >= 2 && !isCommonNoiseWord(finalName)) {
+        return { name: finalName, nominal: nom, confidenceBonus: 25 };
+      }
+    }
+  }
 
+  // Try explicit separators like '💎', ':', '\t', '|'
+  const separators = [' 💎 ', '💎', ':', '\t', ' | '];
   for (const sep of separators) {
     if (cleanLine.includes(sep)) {
-      const parts = cleanLine.split(sep);
-      const left = parts[0].trim();
-      const right = parts.slice(1).join(' ').trim();
-
+      const idx = cleanLine.lastIndexOf(sep);
+      const left = cleanLine.substring(0, idx).trim();
+      const right = cleanLine.substring(idx + sep.length).trim();
       const nomRight = parseNominal(right);
-      if (nomRight !== null && left.length >= 2) {
-        foundName = left;
-        foundNominal = nomRight;
-        break;
-      }
-
-      // Check if nominal is on left side (e.g., "500 gems - Shiro")
-      const nomLeft = parseNominal(left);
-      if (nomLeft !== null && right.length >= 2) {
-        foundName = right;
-        foundNominal = nomLeft;
-        break;
+      if (nomRight !== null && nomRight > 0) {
+        const finalName = sanitizeName(left);
+        if (finalName.length >= 2 && !isCommonNoiseWord(finalName)) {
+          return { name: finalName, nominal: nomRight, confidenceBonus: 25 };
+        }
       }
     }
   }
 
-  // If no explicit separator worked, try trailing nominal regex (e.g. "Shiro Anna 500 Gems" or "Kirito_99 1500 💎" or "WibuLegend 1000")
-  if (!foundNominal) {
-    const trailingMatch = cleanLine.match(/^(.*?)\s+((?:💎\s*)?[\d.,]+\s*(?:k|rb|ribu|gems?|kristal|crystals?|dm|diamond)?)$/i);
-    if (trailingMatch) {
-      const candidateName = trailingMatch[1].trim();
-      const candidateNomStr = trailingMatch[2].trim();
-      const nom = parseNominal(candidateNomStr);
-      if (nom !== null && candidateName.length >= 2) {
-        foundName = candidateName;
-        foundNominal = nom;
-      }
-    }
-  }
-
-  // Extra check: If line has no donation nominal, return null (STRICT: only detect members who have actually donated)
-  if (!foundNominal || foundNominal <= 0) {
-    return null;
-  }
-
-  // Clean and sanitize the member name
-  const finalName = sanitizeName(foundName);
-  if (finalName.length < 2 || isCommonNoiseWord(finalName)) {
-    return null;
-  }
-
-  return {
-    name: finalName,
-    nominal: foundNominal,
-    confidenceBonus: 10,
-  };
+  return null;
 }
 
 // Check for common UI noise words (Game headers, menus, timestamps, roles)
@@ -334,7 +311,7 @@ export function parseClanBlockLines(lines: Array<{ text: string; confidence: num
         results.push({
           name: candidateName,
           nominal: nominalOnly,
-          confidence: Math.min(100, Math.round((candidateConf + conf) / 2)),
+          confidence: Math.min(100, Math.round((candidateConf + conf) / 2) + 20),
           rankNumber: currentRank,
           rawText: `${candidateRaw} | ${rawLine}`,
         });

@@ -121,7 +121,7 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
 
   // Settings for Scan
   const [sampleSpeed, setSampleSpeed] = useState<'fast' | 'normal' | 'detailed'>('normal');
-  const [minConfidence, setMinConfidence] = useState<number>(settings.minConfidence || 50);
+  const [minConfidence, setMinConfidence] = useState<number>(settings.minConfidence || 40);
   const [updateMode, setUpdateMode] = useState<'update_latest' | 'accumulate'>('update_latest');
   const [enableDualPass, setEnableDualPass] = useState<boolean>(true); // 99% accuracy dual-pass 2x scan
 
@@ -1457,14 +1457,15 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                 </div>
                 <input
                   type="range"
-                  min="30"
-                  max="85"
+                  min="20"
+                  max="80"
+                  step="5"
                   value={minConfidence}
                   onChange={(e) => setMinConfidence(parseInt(e.target.value, 10))}
                   className="w-full accent-sky-600 cursor-pointer"
                 />
                 <p className="text-[11px] text-slate-400">
-                  Mencegah baris buram/samar agar tidak salah menebak teks. Baris meragukan otomatis ditandai status REVIEW.
+                  Standar rekomendasi: 35% - 45% untuk OCR foto/video game clan. Baris meragukan otomatis ditandai status REVIEW.
                 </p>
               </div>
 
@@ -1797,17 +1798,76 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
 
               {/* Split Layout: Visual Reference on Left + Review Table on Right */}
               {scanItems.length === 0 ? (
-                <div className="p-8 bg-amber-50/70 border border-amber-200 rounded-xl text-center space-y-2">
+                <div className="p-8 bg-amber-50/70 border border-amber-200 rounded-2xl text-center space-y-4">
                   <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
-                  <h4 className="font-bold text-sm text-amber-900">
-                    Tidak Ditemukan Teks Donasi Gems yang Relevan
-                  </h4>
-                  <p className="text-xs text-amber-700 max-w-md mx-auto leading-relaxed">
-                    Sistem tidak menemukan tulisan nama dan nominal donasi gems pada {fileType === 'video' ? 'video' : 'foto'} ini, atau tingkat keterbacaan (confidence) di bawah ambang batas ({minConfidence}%).
-                  </p>
-                  <p className="text-[11px] text-amber-600">
-                    Sistem tidak menebak teks yang tidak terbaca. Pastikan daftar donasi terlihat jelas dan kontras, atau turunkan ambang batas jika diperlukan.
-                  </p>
+                  <div className="space-y-1">
+                    <h4 className="font-bold text-sm text-amber-900">
+                      Tidak Ditemukan Teks Donasi Gems yang Relevan
+                    </h4>
+                    <p className="text-xs text-amber-700 max-w-md mx-auto leading-relaxed">
+                      Sistem tidak menemukan tulisan nama dan nominal donasi gems pada {fileType === 'video' ? 'video' : 'foto'} ini, atau tingkat keterbacaan (confidence) di bawah ambang batas ({minConfidence}%).
+                    </p>
+                    <p className="text-[11px] text-amber-600">
+                      Sistem tidak menebak teks yang tidak terbaca. Pastikan daftar donasi terlihat jelas dan kontras, atau gunakan tombol di bawah untuk mencoba metode lain:
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                    {minConfidence > 40 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMinConfidence(35);
+                          setTimeout(() => {
+                            handleStartScan();
+                          }, 50);
+                        }}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors flex items-center space-x-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Pindai Ulang Ambang Batas 35%</span>
+                      </button>
+                    )}
+
+                    {engineMode === 'ocr_fallback' ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEngineMode('gemini_vision');
+                          setTimeout(() => {
+                            handleStartScan();
+                          }, 50);
+                        }}
+                        className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors flex items-center space-x-1.5"
+                      >
+                        <Bot className="w-3.5 h-3.5" />
+                        <span>Coba Mode Gemini Vision AI</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEngineMode('ocr_fallback');
+                          setTimeout(() => {
+                            handleStartScan();
+                          }, 50);
+                        }}
+                        className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors flex items-center space-x-1.5"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span>Coba Mode OCR Presisi Lokal</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsAddingManual(true)}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold shadow-2xs transition-colors flex items-center space-x-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>+ Input Manual Member</span>
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className={`grid grid-cols-1 ${showVisualRef && fileUrl ? 'lg:grid-cols-12' : 'lg:grid-cols-1'} gap-5 items-start`}>

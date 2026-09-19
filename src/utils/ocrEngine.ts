@@ -208,26 +208,45 @@ export async function processImageDonations(
   }> = [];
 
   try {
-    const { data } = await worker.recognize(preprocessedCanvas);
-    const recognizedLines: Array<{ text: string; confidence: number }> = [];
+    let { data } = await worker.recognize(preprocessedCanvas);
+    let recognizedLines: Array<{ text: string; confidence: number }> = [];
 
-    const rawLines = (data as any).lines;
-    if (Array.isArray(rawLines) && rawLines.length > 0) {
-      for (const lineObj of rawLines) {
-        recognizedLines.push({
-          text: lineObj.text ? lineObj.text.trim() : '',
-          confidence: typeof lineObj.confidence === 'number' ? lineObj.confidence : data.confidence || 75,
-        });
-      }
-    } else if (data.text) {
-      const splitLines = data.text.split('\n');
-      for (const str of splitLines) {
-        if (str.trim()) {
-          recognizedLines.push({
-            text: str.trim(),
-            confidence: data.confidence || 75,
+    const extractLinesFromData = (tData: any) => {
+      const lines: Array<{ text: string; confidence: number }> = [];
+      const rawLines = tData?.lines;
+      if (Array.isArray(rawLines) && rawLines.length > 0) {
+        for (const lineObj of rawLines) {
+          lines.push({
+            text: lineObj.text ? lineObj.text.trim() : '',
+            confidence: typeof lineObj.confidence === 'number' ? lineObj.confidence : tData.confidence || 75,
           });
         }
+      } else if (tData?.text) {
+        const splitLines = tData.text.split('\n');
+        for (const str of splitLines) {
+          if (str.trim()) {
+            lines.push({
+              text: str.trim(),
+              confidence: tData.confidence || 75,
+            });
+          }
+        }
+      }
+      return lines;
+    };
+
+    recognizedLines = extractLinesFromData(data);
+
+    // If preprocessed canvas found very little text, fallback to original canvas
+    if (recognizedLines.length < 2) {
+      try {
+        const fallback = await worker.recognize(canvas);
+        const fallbackLines = extractLinesFromData(fallback.data);
+        if (fallbackLines.length > recognizedLines.length) {
+          recognizedLines = fallbackLines;
+        }
+      } catch {
+        // Keep primary pass lines
       }
     }
 
@@ -235,7 +254,7 @@ export async function processImageDonations(
       const lineText = lineObj.text;
       const lineConfidence = lineObj.confidence;
 
-      if (lineText.length >= 3 && lineConfidence >= minConfidence) {
+      if (lineText.length >= 3) {
         const parsed = parseOcrLine(lineText);
         if (parsed && parsed.name.length >= 2) {
           const finalConfidence = Math.min(100, Math.max(0, Math.round(lineConfidence + parsed.confidenceBonus)));
@@ -453,7 +472,7 @@ export async function processVideoDonations(
         const lineText = lineObj.text;
         const lineConfidence = lineObj.confidence;
 
-        if (lineText.length >= 3 && lineConfidence >= minConfidence) {
+        if (lineText.length >= 3) {
           const parsed = parseOcrLine(lineText);
           if (parsed && parsed.name.length >= 2) {
             const finalConfidence = Math.min(100, Math.max(0, Math.round(lineConfidence + parsed.confidenceBonus)));
