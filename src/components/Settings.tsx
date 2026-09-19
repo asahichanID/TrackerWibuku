@@ -1,10 +1,9 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
 import { useDatabase } from '../context/DatabaseContext';
 import { useBackgroundJobs } from '../context/BackgroundJobContext';
 import { ActiveTab } from '../types';
 import { formatCurrency } from '../utils/fuzzyMatching';
-import { DENO_PLAYGROUND_CODE } from '../utils/denoTemplate';
 import {
   Settings as SettingsIcon,
   Heart,
@@ -25,13 +24,7 @@ import {
   Activity,
   ShieldCheck,
   Check,
-  Clock,
-  Globe,
-  Copy,
-  ExternalLink,
-  RefreshCw,
-  AlertCircle,
-  KeyRound
+  Clock
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -60,18 +53,6 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   const [currencySymbol, setCurrencySymbol] = useState(settings.currencySymbol || '💎');
   const [minConfidence, setMinConfidence] = useState(settings.minConfidence || 50);
 
-  // Custom Vision API / Deno Proxy URL State
-  const [customApiUrl, setCustomApiUrl] = useState(() => {
-    return settings.customApiUrl || localStorage.getItem('custom_vision_api_url') || '';
-  });
-  const [customApiKey, setCustomApiKey] = useState(() => {
-    return localStorage.getItem('custom_gemini_key') || '';
-  });
-  const [pingStatus, setPingStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-  const [pingMessage, setPingMessage] = useState('');
-  const [pingLatency, setPingLatency] = useState<number | null>(null);
-  const [copiedDenoCode, setCopiedDenoCode] = useState(false);
-
   // Manual Add Form
   const [manualName, setManualName] = useState('');
   const [manualNominal, setManualNominal] = useState('');
@@ -87,21 +68,6 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
 
-    const cleanCustomUrl = customApiUrl.trim().replace(/\/+$/, '');
-    const cleanApiKey = customApiKey.trim();
-
-    if (cleanCustomUrl) {
-      localStorage.setItem('custom_vision_api_url', cleanCustomUrl);
-    } else {
-      localStorage.removeItem('custom_vision_api_url');
-    }
-
-    if (cleanApiKey) {
-      localStorage.setItem('custom_gemini_key', cleanApiKey);
-    } else {
-      localStorage.removeItem('custom_gemini_key');
-    }
-
     updateSettings({
       clanName: clanName.trim() || 'CLAN WIBU',
       reportTitle: reportTitle.trim() || 'LAPORAN DONASI',
@@ -109,63 +75,10 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
       targetDonation: Math.max(0, targetDonation),
       currencySymbol: currencySymbol.trim() || '💎',
       minConfidence,
-      customApiUrl: cleanCustomUrl,
     });
 
     setSaveSuccessMsg(true);
     setTimeout(() => setSaveSuccessMsg(false), 3000);
-  };
-
-  // Test Ping Connection to API Endpoint
-  const handleTestConnection = async () => {
-    const targetBase = customApiUrl.trim().replace(/\/+$/, '');
-    const testUrl = targetBase ? `${targetBase}/api/health` : '/api/health';
-
-    setPingStatus('testing');
-    setPingMessage('Menghubungi endpoint server...');
-    setPingLatency(null);
-
-    const startTime = performance.now();
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (customApiKey.trim()) {
-        headers['x-gemini-api-key'] = customApiKey.trim();
-      }
-
-      const res = await fetch(testUrl, {
-        method: 'GET',
-        headers,
-      });
-      const latencyMs = Math.round(performance.now() - startTime);
-      setPingLatency(latencyMs);
-
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setPingStatus('success');
-        setPingMessage(
-          `Koneksi Berhasil! (${latencyMs}ms) • ${data.provider || data.status || 'Server Siap'}`
-        );
-      } else {
-        setPingStatus('error');
-        setPingMessage(`Server merespons error ${res.status}: ${res.statusText}`);
-      }
-    } catch (err: any) {
-      setPingStatus('error');
-      setPingMessage(`Gagal terhubung ke ${testUrl}: ${err?.message || 'CORS / Network Error'}`);
-    }
-  };
-
-  // Copy Deno Code
-  const handleCopyDenoScript = () => {
-    navigator.clipboard.writeText(DENO_PLAYGROUND_CODE);
-    setCopiedDenoCode(true);
-    confetti({
-      particleCount: 40,
-      spread: 50,
-      origin: { y: 0.8 },
-      colors: ['#0284c7', '#38bdf8', '#34d399'],
-    });
-    setTimeout(() => setCopiedDenoCode(false), 3000);
   };
 
   // Add Manual Member
@@ -326,149 +239,6 @@ export const Settings: React.FC<SettingsProps> = ({ setActiveTab }) => {
               Saat Anda memproses video atau foto donasi, antrean berjalan di background server lokal. Anda dapat menutup halaman web, beralih aplikasi, atau bermain game tanpa khawatir progres terhenti atau terulang kembali.
             </p>
           </div>
-        </div>
-      </div>
-
-      {/* Deno Playground / Cloud Proxy Configuration Card */}
-      <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
-          <div className="flex items-center space-x-2">
-            <Globe className="w-5 h-5 text-sky-600" />
-            <div>
-              <h3 className="font-bold text-base text-slate-800">
-                Koneksi API Deno Playground / Cloud Vision Proxy
-              </h3>
-              <p className="text-xs text-slate-500">
-                Gunakan URL backend Deno Playground sendiri jika server lokal / hosting production mengalami batasan request.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleCopyDenoScript}
-            className="inline-flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold text-xs border border-indigo-200/80 transition-colors shrink-0 cursor-pointer"
-            title="Salin seluruh kode server Deno Playground siap pakai"
-          >
-            {copiedDenoCode ? (
-              <>
-                <Check className="w-4 h-4 text-emerald-600" />
-                <span className="text-emerald-700">Kode Disalin!</span>
-              </>
-            ) : (
-              <>
-                <Copy className="w-4 h-4" />
-                <span>Salin Script Deno (1-Klik)</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {/* Step by step guide banner */}
-        <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/70 text-xs space-y-2">
-          <p className="font-bold text-slate-800 flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <span>Cara Menjalankan di Deno Playground (Gratis &amp; Cepat):</span>
-          </p>
-          <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-1 leading-relaxed">
-            <li>Buka <a href="https://play.deno.com" target="_blank" rel="noreferrer" className="text-sky-600 font-semibold underline inline-flex items-center gap-0.5">play.deno.com <ExternalLink className="w-3 h-3 inline" /></a> atau Deno Deploy dashboard.</li>
-            <li>Klik tombol <strong>"Salin Script Deno (1-Klik)"</strong> di atas, lalu tempel (paste) menggantikan kode default di Deno Playground.</li>
-            <li>Klik tombol <strong>Save / Deploy</strong> di Deno Playground, lalu salin URL yang dihasilkan (misal: <code className="bg-white px-1.5 py-0.5 rounded border text-slate-700 font-mono">https://nama-projek.deno.dev</code>).</li>
-            <li>Tempel URL tersebut pada kolom input di bawah, lalu klik <strong>Tes Koneksi</strong> &amp; <strong>Simpan</strong>.</li>
-          </ol>
-        </div>
-
-        {/* URL Input Form & Controls */}
-        <div className="space-y-4 text-xs">
-          <div>
-            <label className="font-semibold text-slate-700 block mb-1.5">
-              URL Endpoint Deno Playground / Cloud Proxy
-            </label>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="url"
-                placeholder="Contoh: https://my-ocr-proxy.deno.dev (Kosongkan jika ingin pakai server lokal)"
-                value={customApiUrl}
-                onChange={(e) => setCustomApiUrl(e.target.value)}
-                className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 font-mono text-slate-800 text-xs"
-              />
-              <button
-                type="button"
-                onClick={handleTestConnection}
-                disabled={pingStatus === 'testing'}
-                className="inline-flex items-center justify-center space-x-1.5 px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 disabled:bg-slate-400 text-white font-bold text-xs shadow-xs transition-colors shrink-0 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${pingStatus === 'testing' ? 'animate-spin' : ''}`} />
-                <span>{pingStatus === 'testing' ? 'Memeriksa...' : 'Tes Koneksi'}</span>
-              </button>
-              {customApiUrl && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCustomApiUrl('');
-                    localStorage.removeItem('custom_vision_api_url');
-                    updateSettings({ customApiUrl: '' });
-                    setPingStatus('idle');
-                    setPingMessage('');
-                  }}
-                  className="px-3 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors shrink-0 cursor-pointer"
-                >
-                  Reset ke Lokal
-                </button>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400 mt-1">
-              Jika diisi, seluruh pemindaian video &amp; foto OCR akan otomatis dialihkan ke endpoint ini.
-            </p>
-          </div>
-
-          {/* Optional API Key Override */}
-          <div>
-            <label className="font-semibold text-slate-700 block mb-1.5">
-              API Key Gemini Override (Opsional)
-            </label>
-            <div className="relative">
-              <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-              <input
-                type="password"
-                placeholder="Opsional - kosongkan jika API Key sudah tertanam di Deno Playground"
-                value={customApiKey}
-                onChange={(e) => setCustomApiKey(e.target.value)}
-                className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:outline-sky-500 font-mono text-slate-800 text-xs"
-              />
-            </div>
-          </div>
-
-          {/* Ping Status Banner */}
-          {pingStatus !== 'idle' && (
-            <div
-              className={`p-3.5 rounded-xl border flex items-start space-x-2.5 transition-all ${
-                pingStatus === 'success'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                  : pingStatus === 'error'
-                  ? 'bg-rose-50 border-rose-200 text-rose-900'
-                  : 'bg-sky-50 border-sky-200 text-sky-900'
-              }`}
-            >
-              {pingStatus === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-              ) : pingStatus === 'error' ? (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              ) : (
-                <RefreshCw className="w-4 h-4 text-sky-600 animate-spin shrink-0 mt-0.5" />
-              )}
-              <div className="text-xs space-y-0.5">
-                <p className="font-bold">
-                  {pingStatus === 'success'
-                    ? 'Endpoint Aktif & Terhubung'
-                    : pingStatus === 'error'
-                    ? 'Koneksi Gagal'
-                    : 'Menguji Endpoint...'}
-                </p>
-                <p className="text-[11px] leading-relaxed opacity-90">{pingMessage}</p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
