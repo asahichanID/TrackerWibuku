@@ -9,14 +9,10 @@ import { stringSimilarity, sanitizeName, isSameClanMember } from './fuzzyMatchin
 
 const PRIMARY_VISION_API_BASE = 'https://silver-mule-2906.shiroanna.deno.net';
 
-function getVisionBaseUrl(): string {
-  return PRIMARY_VISION_API_BASE;
-}
-
-function buildVisionUrl(endpoint: string): string {
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  return `${PRIMARY_VISION_API_BASE}${cleanEndpoint}`;
-}
+const VISION_ENDPOINTS = [
+  (ep: string) => `${PRIMARY_VISION_API_BASE}${ep.startsWith('/') ? ep : `/${ep}`}`,
+  (ep: string) => (ep.startsWith('/') ? ep : `/${ep}`),
+];
 
 function getVisionHeaders(): Record<string, string> {
   return {
@@ -70,56 +66,73 @@ export interface ApiDetectedDonation {
  * Checks if the server Gemini Vision API is accessible
  */
 export async function checkGeminiVisionHealth(): Promise<{ available: boolean; provider?: string }> {
-  try {
-    const res = await fetch(buildVisionUrl('/api/health'), {
-      headers: getVisionHeaders(),
-    });
-    if (!res.ok) return { available: false };
-    const data = await res.json();
-    return { available: data.status === 'ok', provider: data.provider || data.engine };
-  } catch {
-    return { available: false };
+  for (const buildUrl of VISION_ENDPOINTS) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(buildUrl('/api/health'), {
+        headers: getVisionHeaders(),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const data = await res.json();
+        return { available: data.status === 'ok', provider: data.provider || data.engine };
+      }
+    } catch {
+      // Try next endpoint
+    }
   }
+  return { available: false };
 }
 
 /**
- * Robust fetch with automatic client retry for frame analysis
+ * Robust fetch with automatic client retry and dual-endpoint failover for frame analysis
  */
 export async function fetchAnalyzeFrameWithRetry(
   payload: { image: string; mimeType: string; frameIndex?: number; totalFrames?: number },
   maxRetries = 2
 ): Promise<{ success: boolean; items: ApiDetectedDonation[]; error?: string }> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await fetch(buildVisionUrl('/api/analyze-frame'), {
-        method: 'POST',
-        headers: getVisionHeaders(),
-        body: JSON.stringify(payload),
-      });
+  let lastErrorMsg = 'Gagal memproses frame visual.';
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success !== false) {
-          return { success: true, items: json.items || [] };
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (const buildUrl of VISION_ENDPOINTS) {
+      try {
+        const url = buildUrl('/api/analyze-frame');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 18000);
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: getVisionHeaders(),
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success !== false) {
+            return { success: true, items: json.items || [] };
+          }
+          if (json.error) lastErrorMsg = json.error;
+        } else {
+          const errJson = await res.json().catch(() => ({}));
+          if (errJson.error) lastErrorMsg = errJson.error;
         }
-        if (attempt === maxRetries) {
-          return { success: false, items: [], error: json.error || 'Gagal memproses frame visual.' };
+      } catch (netErr: any) {
+        if (netErr?.name === 'AbortError') {
+          lastErrorMsg = 'Waktu permintaan analisis visual habis (timeout).';
+        } else if (netErr?.message) {
+          lastErrorMsg = netErr.message;
         }
-      } else {
-        const errJson = await res.json().catch(() => ({}));
-        if (attempt === maxRetries) {
-          return { success: false, items: [], error: errJson.error || `Server API error ${res.status}` };
-        }
-      }
-    } catch (netErr: any) {
-      if (attempt === maxRetries) {
-        return { success: false, items: [], error: netErr?.message || 'Network error saat menghubungi server vision.' };
       }
     }
     // Exponential backoff before retry
-    await new Promise((r) => setTimeout(r, 650 * (attempt + 1)));
+    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
   }
-  return { success: false, items: [], error: 'Timeout koneksi vision.' };
+
+  return { success: false, items: [], error: lastErrorMsg };
 }
 
 /**
@@ -130,26 +143,31 @@ export async function fetchDoubleScanVerify(
   maxRetries = 2
 ): Promise<{ success: boolean; items: ApiDetectedDonation[]; error?: string }> {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await fetch(buildVisionUrl('/api/verify-double-scan'), {
-        method: 'POST',
-        headers: getVisionHeaders(),
-        body: JSON.stringify(payload),
-      });
+    for (const buildUrl of VISION_ENDPOINTS) {
+      try {
+        const url = buildUrl('/api/verify-double-scan');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 18000);
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success !== false && Array.isArray(json.items) && json.items.length > 0) {
-          return { success: true, items: json.items };
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: getVisionHeaders(),
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success !== false && Array.isArray(json.items) && json.items.length > 0) {
+            return { success: true, items: json.items };
+          }
         }
-        if (attempt === maxRetries) {
-          return { success: false, items: payload.candidateItems, error: json.error };
-        }
+      } catch {
+        // Try next endpoint
       }
-    } catch {
-      // Continue to retry
     }
-    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
   }
   return { success: true, items: payload.candidateItems };
 }

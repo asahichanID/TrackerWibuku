@@ -16,7 +16,8 @@ import {
   checkGeminiVisionHealth,
   extractFramesFromVideo,
   extractFrameFromImage,
-  fileToBase64
+  fileToBase64,
+  fetchDoubleScanVerify
 } from '../utils/aiVisionEngine';
 import {
   cacheFileIntoProject,
@@ -714,43 +715,36 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
         return;
       }
 
-      const res = await fetch('/api/verify-double-scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: imageBase64,
-          mimeType,
-          candidateItems: [
-            {
-              name: targetItem.name,
-              nominal: targetItem.nominal,
-              confidence: targetItem.confidence,
-              status: 'REVIEW',
-              rowPosition: targetItem.rowPosition,
-            },
-          ],
-        }),
+      const verifyRes = await fetchDoubleScanVerify({
+        image: imageBase64,
+        mimeType,
+        candidateItems: [
+          {
+            name: targetItem.name,
+            nominal: targetItem.nominal,
+            confidence: targetItem.confidence,
+            status: 'REVIEW',
+            rowPosition: targetItem.rowPosition,
+          },
+        ],
       });
 
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && Array.isArray(json.items) && json.items.length > 0) {
-          const verified = json.items[0];
-          setScanItems((prev) =>
-            prev.map((i) =>
-              i.id === targetItem.id
-                ? {
-                    ...i,
-                    name: verified.name || i.name,
-                    nominal: typeof verified.nominal === 'number' ? verified.nominal : i.nominal,
-                    confidence: 99,
-                    status: 'accepted',
-                    notes: '✨ 99% Akurat (Double-Scan AI 2x)',
-                  }
-                : i
-            )
-          );
-        }
+      if (verifyRes.success && Array.isArray(verifyRes.items) && verifyRes.items.length > 0) {
+        const verified = verifyRes.items[0];
+        setScanItems((prev) =>
+          prev.map((i) =>
+            i.id === targetItem.id
+              ? {
+                  ...i,
+                  name: verified.name || i.name,
+                  nominal: typeof verified.nominal === 'number' ? verified.nominal : i.nominal,
+                  confidence: 99,
+                  status: 'accepted',
+                  notes: '✨ 99% Akurat (Double-Scan AI 2x)',
+                }
+              : i
+          )
+        );
       }
     } catch (err) {
       console.warn('Re-verification single row error:', err);

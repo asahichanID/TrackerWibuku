@@ -118,14 +118,16 @@ export async function clearCompletedBackgroundJobs(): Promise<{ success: boolean
 }
 
 export async function testBackendConnection(): Promise<{ ok: boolean; message: string; details?: any }> {
-  try {
-    const res = await fetch('/api/health');
-    if (!res.ok) {
-      return { ok: false, message: `Server HTTP ${res.status}: ${res.statusText}` };
+  for (const url of ['/api/health', `${PRIMARY_API_BASE}/api/health`]) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        return { ok: true, message: 'Server Background & Vision Berjalan Normal!', details: data };
+      }
+    } catch {
+      // try next
     }
-    const data = await res.json();
-    return { ok: true, message: 'Server Background Lokal Berjalan Normal!', details: data };
-  } catch (err: any) {
-    return { ok: false, message: `Koneksi lokal gagal: ${err?.message || 'Tidak dapat terhubung'}` };
   }
+  return { ok: false, message: 'Tidak dapat terhubung ke endpoint server.' };
 }

@@ -117,17 +117,17 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
       }
     }
     
-    // Multi-model failover hierarchy with prioritized production-ready models (Gemini 3 Flash series & latest backups)
+    // Multi-model failover hierarchy with prioritized production-ready models
     const candidateModels = [
-      "gemini-3.8-flash",
-      "gemini-3.7-flash",
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
       "gemini-3.6-flash",
       "gemini-flash-latest",
       "gemini-3.1-flash-lite",
       "gemini-3.1-pro-preview",
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
+      "gemini-3.7-flash",
+      "gemini-3.8-flash",
     ];
 
     let lastError: any = null;
@@ -162,9 +162,32 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
           const status = err?.status || err?.code || 500;
           console.info(`[VisionRouter] Model ${modelName} unavailable (status ${status}). Routing immediately to next candidate...`);
           // Brief pause between candidate transitions
-          await new Promise((r) => setTimeout(r, 150));
+          await new Promise((r) => setTimeout(r, 100));
         }
       }
+    }
+
+    // Remote Deno Proxy Failover (if local client fails or has no key)
+    try {
+      const denoRes = await fetch("https://silver-mule-2906.shiroanna.deno.net/api/analyze-frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: cleanBase64,
+          mimeType: resolvedMime,
+        }),
+      });
+      if (denoRes.ok) {
+        const denoJson: any = await denoRes.json();
+        if (denoJson.success && Array.isArray(denoJson.items)) {
+          return {
+            text: JSON.stringify(denoJson.items),
+            model: denoJson.modelUsed || "deno-gemini-vision-proxy",
+          };
+        }
+      }
+    } catch (denoErr) {
+      console.info("[VisionRouter] Deno secondary fallback error:", denoErr);
     }
 
     const isHighDemand =
