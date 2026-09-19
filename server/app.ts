@@ -180,7 +180,8 @@ export function createApiApp() {
   // Gemini Vision Frame Analysis Endpoint
   app.post("/api/analyze-frame", async (req: Request, res: Response) => {
     try {
-      const { image, mimeType, frameIndex, totalFrames } = req.body;
+      const { image, mimeType, frameIndex, totalFrames, apiKey } = req.body;
+      const apiKeyOverride = (req.headers["x-gemini-api-key"] as string) || (typeof apiKey === "string" ? apiKey : undefined);
 
       if (!image || typeof image !== "string") {
         res.status(400).json({
@@ -196,6 +197,7 @@ export function createApiApp() {
         {
           frameIndex: typeof frameIndex === "number" ? frameIndex : undefined,
           totalFrames: typeof totalFrames === "number" ? totalFrames : undefined,
+          apiKeyOverride,
         }
       );
 
@@ -213,7 +215,8 @@ export function createApiApp() {
   // Pass 2: Double-Scan Verification & Anomaly Reconciliation Endpoint
   app.post("/api/verify-double-scan", async (req: Request, res: Response) => {
     try {
-      const { image, mimeType, candidateItems } = req.body;
+      const { image, mimeType, candidateItems, apiKey } = req.body;
+      const apiKeyOverride = (req.headers["x-gemini-api-key"] as string) || (typeof apiKey === "string" ? apiKey : undefined);
 
       if (!image || typeof image !== "string") {
         res.status(400).json({
@@ -226,7 +229,8 @@ export function createApiApp() {
       const result = await defaultGeminiVisionProvider.verifyAnomalies(
         image,
         mimeType || "image/jpeg",
-        Array.isArray(candidateItems) ? candidateItems : []
+        Array.isArray(candidateItems) ? candidateItems : [],
+        apiKeyOverride
       );
 
       res.json(result);

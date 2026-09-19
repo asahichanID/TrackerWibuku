@@ -5,7 +5,7 @@
 
 import { createWorker, Worker } from 'tesseract.js';
 import { ScanResultItem } from '../types';
-import { parseOcrLine, stringSimilarity, isSameClanMember, sanitizeName } from './fuzzyMatching';
+import { parseOcrLine, parseClanBlockLines, stringSimilarity, isSameClanMember, sanitizeName } from './fuzzyMatching';
 import { captureVideoFrame, calculateFrameDifference, preprocessCanvasForOcr, PreprocessOptions } from './imagePreprocessing';
 import { ensureVideoReadyAndGetDuration } from './aiVisionEngine';
 
@@ -253,6 +253,21 @@ export async function processImageDonations(
         }
       }
     }
+
+    // Also run spatial clan block parsing to capture multi-line member entries
+    const blockDetections = parseClanBlockLines(recognizedLines);
+    for (const block of blockDetections) {
+      if (block.name.length >= 2 && block.confidence >= minConfidence) {
+        rawDetections.push({
+          name: block.name,
+          nominal: block.nominal,
+          confidence: block.confidence,
+          frameTimeSec: 0,
+          rawText: block.rawText,
+          thumbnailUrl: thumbnailData,
+        });
+      }
+    }
   } catch (err) {
     console.error('Error recognizing image:', err);
   }
@@ -454,6 +469,21 @@ export async function processVideoDonations(
               });
             }
           }
+        }
+      }
+
+      // Also run spatial clan block parsing to capture multi-line member entries for video frame
+      const blockDetections = parseClanBlockLines(recognizedLines);
+      for (const block of blockDetections) {
+        if (block.name.length >= 2 && block.confidence >= minConfidence) {
+          rawDetections.push({
+            name: block.name,
+            nominal: block.nominal,
+            confidence: block.confidence,
+            frameTimeSec: Math.round(t * 10) / 10,
+            rawText: block.rawText,
+            thumbnailUrl: thumbnailData,
+          });
         }
       }
     } catch (err) {

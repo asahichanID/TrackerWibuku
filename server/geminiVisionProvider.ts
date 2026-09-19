@@ -89,19 +89,41 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
   /**
    * Helper to execute Gemini generation with automatic failover and jittered backoff
    */
-  private async executeGenerate(prompt: string, cleanBase64: string, resolvedMime: string): Promise<{ text: string; model: string }> {
-    const currentEnvKey = (process.env.GEMINI_API_KEY || "").trim();
-    if (!this.client || this.currentApiKey !== currentEnvKey) {
-      this.initClient();
+  private async executeGenerate(
+    prompt: string,
+    cleanBase64: string,
+    resolvedMime: string,
+    apiKeyOverride?: string
+  ): Promise<{ text: string; model: string }> {
+    const effectiveApiKey = (apiKeyOverride || process.env.GEMINI_API_KEY || "").trim();
+    if (!this.client || this.currentApiKey !== effectiveApiKey) {
+      this.currentApiKey = effectiveApiKey;
+      if (effectiveApiKey) {
+        try {
+          this.client = new GoogleGenAI({
+            apiKey: effectiveApiKey,
+            httpOptions: {
+              headers: {
+                "User-Agent": "aistudio-build",
+              },
+            },
+          });
+        } catch (err) {
+          console.error("[GeminiVisionProvider] Initialization error:", err);
+          this.client = null;
+        }
+      } else {
+        this.client = null;
+      }
     }
     
     // Multi-model failover hierarchy with prioritized production-ready models
     const candidateModels = [
-      "gemini-2.5-flash",
-      "gemini-flash-latest",
+      "gemini-3.6-flash",
       "gemini-3.8-flash",
       "gemini-3.1-flash-lite",
       "gemini-3.1-pro-preview",
+      "gemini-flash-latest",
     ];
 
     let lastError: any = null;
@@ -150,7 +172,7 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
 
     const failureReason = isHighDemand
       ? "Layanan Gemini Vision sedang mengalami lonjakan beban sesaat. Silakan coba kembali sesaat lagi atau gunakan mode Mesin OCR Presisi."
-      : (!process.env.GEMINI_API_KEY ? "GEMINI_API_KEY belum terkonfigurasi di server." : `Gagal menghubungi Gemini Vision: ${lastError?.message || "Semua model sibuk"}`);
+      : (!effectiveApiKey ? "GEMINI_API_KEY belum terkonfigurasi di server." : `Gagal menghubungi Gemini Vision: ${lastError?.message || "Semua model sibuk"}`);
 
     throw new Error(failureReason);
   }
@@ -162,7 +184,7 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
   async analyzeFrame(
     base64Data: string,
     mimeType: string = "image/jpeg",
-    options?: { frameIndex?: number; totalFrames?: number }
+    options?: { frameIndex?: number; totalFrames?: number; apiKeyOverride?: string }
   ): Promise<VisionAnalysisResult> {
     const { cleanBase64, resolvedMime } = this.cleanPayload(base64Data, mimeType);
 
@@ -233,7 +255,7 @@ CRITICAL RECOGNITION RULES (MANDATORY):
 `;
 
     try {
-      const { text, model } = await this.executeGenerate(systemPrompt, cleanBase64, resolvedMime);
+      const { text, model } = await this.executeGenerate(systemPrompt, cleanBase64, resolvedMime, options?.apiKeyOverride);
       const items = this.parseModelJson(text);
 
       return {
@@ -262,7 +284,8 @@ CRITICAL RECOGNITION RULES (MANDATORY):
   async verifyAnomalies(
     base64Data: string,
     mimeType: string = "image/jpeg",
-    candidateItems: DetectedDonation[]
+    candidateItems: DetectedDonation[],
+    apiKeyOverride?: string
   ): Promise<VisionAnalysisResult> {
     const { cleanBase64, resolvedMime } = this.cleanPayload(base64Data, mimeType);
 
@@ -299,7 +322,7 @@ Return ONLY a strict JSON array of the reconciled 100% verified donor rows:
 ]`;
 
     try {
-      const { text, model } = await this.executeGenerate(verificationPrompt, cleanBase64, resolvedMime);
+      const { text, model } = await this.executeGenerate(verificationPrompt, cleanBase64, resolvedMime, apiKeyOverride);
       const verifiedItems = this.parseModelJson(text);
 
       if (verifiedItems.length > 0) {

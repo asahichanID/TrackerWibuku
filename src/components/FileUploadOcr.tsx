@@ -452,55 +452,26 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
             );
           }
         } catch (aiErr: any) {
-          console.warn('[Scan] Gemini Vision fallback trigger:', aiErr?.message || aiErr);
+          console.error('[Scan] Gemini Vision error:', aiErr?.message || aiErr);
           
           if (cancelSignalRef.current.isCancelled) return;
 
-          setProgressInfo((prev) => ({
-            ...prev,
-            status: 'processing',
-            message: 'Gemini AI belum aktif/merespon. Mengalihkan scan otomatis ke Mesin OCR Presisi bawaan...',
-          }));
-
-          // Seamless fallback to client OCR so user never gets stuck
-          if (fileType === 'video') {
-            const vid = await resolveVideoElement();
-            results = await processVideoDonations(
-              vid,
-              {
-                sampleIntervalSec: intervalMap[sampleSpeed],
-                minConfidence,
-                preprocessOptions: {
-                  grayscale: true,
-                  contrastStretch: true,
-                  sharpen: true,
-                },
-                existingMemberNames: existingNames,
-                onProgress: (info) => setProgressInfo(info),
-              },
-              cancelSignalRef.current
-            );
-          } else if (fileType === 'image') {
-            const img = await resolveImageElement();
-            results = await processImageDonations(
-              img,
-              {
-                sampleIntervalSec: 1,
-                minConfidence,
-                preprocessOptions: {
-                  grayscale: true,
-                  contrastStretch: true,
-                  sharpen: true,
-                },
-                existingMemberNames: existingNames,
-                onProgress: (info) => setProgressInfo(info),
-              },
-              cancelSignalRef.current
-            );
-          }
+          const errorMsg = aiErr?.message || 'Layanan Gemini Vision tidak dapat dihubungi.';
+          setProgressInfo({
+            status: 'error',
+            currentFrame: 0,
+            totalFrames: 0,
+            currentTimeSec: 0,
+            durationSec: 0,
+            percent: 0,
+            message: `Gagal Scan Gemini Vision: ${errorMsg}`,
+            detectedCount: 0,
+          });
+          setIsProcessing(false);
+          return;
         }
       } else {
-        // Fallback OCR Engine
+        // Tesseract Local OCR Engine
         if (fileType === 'video') {
           const vid = await resolveVideoElement();
           results = await processVideoDonations(
@@ -1289,33 +1260,58 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                 )}
               </div>
 
-              {/* OCR Progress Bar when Processing */}
+              {/* Scan Progress Bar when Processing */}
               {isProcessing && (
-                <div className="space-y-2 pt-2">
-                  <div className="flex justify-between text-xs">
-                    <span className="font-semibold text-slate-700 flex items-center gap-1.5">
-                      <span className="animate-spin w-3 h-3 rounded-full border-2 border-sky-600 border-t-transparent inline-block" />
-                      <span>{progressInfo.message || 'Memproses OCR...'}</span>
-                    </span>
-                    <span className="font-bold text-sky-600 font-mono">
+                <div className={`p-3.5 rounded-xl border space-y-2.5 transition-all ${
+                  engineMode === 'gemini_vision'
+                    ? 'bg-gradient-to-br from-indigo-50/90 via-sky-50/70 to-purple-50/80 border-indigo-200/80'
+                    : 'bg-slate-50 border-slate-200'
+                }`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {engineMode === 'gemini_vision' ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-white/90 px-2.5 py-0.5 rounded-full border border-indigo-200 shadow-2xs">
+                          <Bot className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
+                          <span>Gemini 3.6 Flash Vision</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-700 bg-white px-2.5 py-0.5 rounded-full border border-slate-200">
+                          <FileText className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Tesseract Local OCR</span>
+                        </span>
+                      )}
+                    </div>
+                    <span className={`font-mono font-bold text-xs ${
+                      engineMode === 'gemini_vision' ? 'text-indigo-600' : 'text-sky-600'
+                    }`}>
                       {progressInfo.percent}%
                     </span>
                   </div>
 
-                  <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="flex justify-between text-xs">
+                    <span className="font-medium text-slate-700 flex items-center gap-1.5 line-clamp-1">
+                      <span>{progressInfo.message || (engineMode === 'gemini_vision' ? 'Menganalisis frame visual dengan Gemini AI...' : 'Memproses pengenalan karakter OCR...')}</span>
+                    </span>
+                  </div>
+
+                  <div className="w-full h-2.5 bg-slate-200/70 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-sky-500 to-blue-600 rounded-full transition-all duration-200"
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        engineMode === 'gemini_vision'
+                          ? 'bg-gradient-to-r from-indigo-500 via-sky-500 to-purple-600'
+                          : 'bg-gradient-to-r from-sky-500 to-blue-600'
+                      }`}
                       style={{ width: `${progressInfo.percent}%` }}
                     />
                   </div>
 
-                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="flex items-center justify-between text-[11px] text-slate-500">
                     <span>
                       {fileType === 'video'
                         ? `Frame: ${progressInfo.currentFrame} / ${progressInfo.totalFrames || '?'}`
                         : 'Menganalisis resolusi gambar'}
                     </span>
-                    <span>Donatur Terdeteksi: <strong className="text-slate-700">{progressInfo.detectedCount}</strong></span>
+                    <span>Donatur Terdeteksi: <strong className="text-slate-800 font-bold">{progressInfo.detectedCount}</strong></span>
                   </div>
                 </div>
               )}

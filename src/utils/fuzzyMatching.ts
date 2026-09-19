@@ -256,7 +256,7 @@ export function parseOcrLine(line: string): { name: string; nominal: number; con
 }
 
 // Check for common UI noise words (Game headers, menus, timestamps, roles)
-function isCommonNoiseWord(str: string): boolean {
+export function isCommonNoiseWord(str: string): boolean {
   const noise = [
     'clan', 'guild', 'donation', 'donasi', 'leaderboard', 'rank', 'ranking',
     'total', 'member', 'anggota', 'daftar', 'history', 'riwayat', 'menu',
@@ -268,6 +268,103 @@ function isCommonNoiseWord(str: string): boolean {
   ];
   const s = str.toLowerCase().trim();
   return noise.includes(s) || /^\d+$/.test(s);
+}
+
+/**
+ * Parses sequential multi-line OCR text blocks from mobile game clan leaderboard screens
+ * Handles cases where rank number + player name, role badge, lifetime total, and donation pill appear on separate lines.
+ */
+export function parseClanBlockLines(lines: Array<{ text: string; confidence: number }>): Array<{
+  name: string;
+  nominal: number;
+  confidence: number;
+  rankNumber?: number;
+  rawText: string;
+}> {
+  const results: Array<{
+    name: string;
+    nominal: number;
+    confidence: number;
+    rankNumber?: number;
+    rawText: string;
+  }> = [];
+
+  let currentRank: number | undefined = undefined;
+  let candidateName: string = '';
+  let candidateConf = 75;
+  let candidateRaw = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i].text.trim();
+    const conf = lines[i].confidence;
+    if (!rawLine || rawLine.length < 2) continue;
+
+    // Check if line is purely noise or role badge
+    if (isCommonNoiseWord(rawLine) || /^(OFFICER|VICE LEADER|ADMIRAL|LEADER|MEMBER|ELDER)$/i.test(rawLine)) {
+      continue;
+    }
+
+    // Check if line is lifetime activity e.g. "Total 361,3K · Gabung 21 hr"
+    if (/^Total\s+[\d.,]+[KkMm]?\s*[·•-]?\s*Gabung/i.test(rawLine)) {
+      continue;
+    }
+
+    // Check if line contains a complete single-line entry
+    const singleParsed = parseOcrLine(rawLine);
+    if (singleParsed && singleParsed.nominal > 0) {
+      // Extract starting rank if present e.g. "1 『緒』..."
+      const rankMatch = rawLine.match(/^(\d+)[\s.:\-–—)]/);
+      const parsedRank = rankMatch ? parseInt(rankMatch[1], 10) : undefined;
+      results.push({
+        name: singleParsed.name,
+        nominal: singleParsed.nominal,
+        confidence: Math.min(100, Math.round(conf + singleParsed.confidenceBonus)),
+        rankNumber: parsedRank,
+        rawText: rawLine,
+      });
+      candidateName = '';
+      currentRank = undefined;
+      continue;
+    }
+
+    // Check if line is a donation crystal nominal alone (e.g. "27,0K", "15,1K", "5,0K", "1.000", "500 gems", "💎 27,0K")
+    const nominalOnly = parseNominal(rawLine);
+    if (nominalOnly !== null && nominalOnly > 0) {
+      if (candidateName && candidateName.length >= 2) {
+        results.push({
+          name: candidateName,
+          nominal: nominalOnly,
+          confidence: Math.min(100, Math.round((candidateConf + conf) / 2)),
+          rankNumber: currentRank,
+          rawText: `${candidateRaw} | ${rawLine}`,
+        });
+        candidateName = '';
+        currentRank = undefined;
+        continue;
+      }
+    }
+
+    // Check if line looks like a player name (often starts with rank e.g. "1 『緒』 - rzkyfhrzi." or has clan brackets)
+    const rankMatch = rawLine.match(/^(\d+)[\s.:\-–—)]\s*(.+)/);
+    if (rankMatch) {
+      currentRank = parseInt(rankMatch[1], 10);
+      const cleaned = sanitizeName(rankMatch[2]);
+      if (cleaned.length >= 2 && !isCommonNoiseWord(cleaned)) {
+        candidateName = cleaned;
+        candidateConf = conf;
+        candidateRaw = rawLine;
+      }
+    } else {
+      const cleaned = sanitizeName(rawLine);
+      if (cleaned.length >= 2 && !isCommonNoiseWord(cleaned)) {
+        candidateName = cleaned;
+        candidateConf = conf;
+        candidateRaw = rawLine;
+      }
+    }
+  }
+
+  return results;
 }
 
 // Sanitize member name while preserving brackets (『』), Japanese/Asian characters, and standard nick symbols
