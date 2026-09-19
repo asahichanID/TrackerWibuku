@@ -198,50 +198,41 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
       return;
     }
 
-    // Revoke old URL if any
+    // Revoke previous URL if any
     if (fileUrl) {
-      URL.revokeObjectURL(fileUrl);
+      try {
+        URL.revokeObjectURL(fileUrl);
+      } catch {
+        // ignore
+      }
     }
 
-    setIsCaching(true);
-    setCacheProgress({
-      status: 'reading',
-      bytesRead: 0,
-      totalBytes: file.size,
+    // Instantly create reliable direct object URL for immediate display
+    const directUrl = URL.createObjectURL(file);
+    setUploadedFile(file);
+    setFileType(detected);
+    setFileUrl(directUrl);
+    setScanItems([]);
+    setHasScanned(false);
+    setExistingCache(null);
+    setIsCaching(false);
+    setProgressInfo({
+      status: 'idle',
+      currentFrame: 0,
+      totalFrames: 0,
+      currentTimeSec: 0,
+      durationSec: 0,
       percent: 0,
-      message: 'Mempersiapkan pipeline pengunduhan & cache proyek...',
+      message: '',
+      detectedCount: 0,
     });
 
+    // Asynchronously compute hash & cache record without blocking preview
     try {
-      const record = await cacheFileIntoProject(file, (progress) => {
-        setCacheProgress(progress);
-      });
-
+      const record = await cacheFileIntoProject(file);
       setCachedRecord(record);
-      setUploadedFile(file);
-      setFileType(detected);
-      setFileUrl(record.objectUrl);
-      setScanItems([]);
-      setHasScanned(false);
-      setExistingCache(null);
-      setProgressInfo({
-        status: 'idle',
-        currentFrame: 0,
-        totalFrames: 0,
-        currentTimeSec: 0,
-        durationSec: 0,
-        percent: 0,
-        message: '',
-        detectedCount: 0,
-      });
     } catch (cacheErr) {
-      console.warn('[Cache] Fallback direct object url:', cacheErr);
-      const url = URL.createObjectURL(file);
-      setUploadedFile(file);
-      setFileType(detected);
-      setFileUrl(url);
-    } finally {
-      setIsCaching(false);
+      console.warn('[Cache] Background caching skipped:', cacheErr);
     }
   };
 
@@ -366,74 +357,154 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
 
     const existingNames = members.map((m) => m.name);
 
+    // Safely retrieve or instantiate image element
+    const resolveImageElement = async (): Promise<HTMLImageElement> => {
+      if (imageRef.current && imageRef.current.complete && (imageRef.current.naturalWidth || imageRef.current.width)) {
+        return imageRef.current;
+      }
+      const img = new Image();
+      img.src = fileUrl || URL.createObjectURL(uploadedFile);
+      await new Promise<void>((resolve) => {
+        if (img.complete && img.naturalWidth) return resolve();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+        setTimeout(resolve, 2000);
+      });
+      return img;
+    };
+
+    // Safely retrieve or instantiate video element
+    const resolveVideoElement = async (): Promise<HTMLVideoElement> => {
+      if (videoRef.current) return videoRef.current;
+      const vid = document.createElement('video');
+      vid.preload = 'auto';
+      vid.muted = true;
+      vid.playsInline = true;
+      vid.src = fileUrl || URL.createObjectURL(uploadedFile);
+      await new Promise<void>((resolve) => {
+        vid.onloadedmetadata = () => resolve();
+        vid.onerror = () => resolve();
+        setTimeout(resolve, 2000);
+      });
+      return vid;
+    };
+
     try {
       let results: ScanResultItem[] = [];
 
       if (engineMode === 'gemini_vision') {
-        // AI Vision processing via autonomous server provider (No UI API Key required)
-        if (fileType === 'video') {
-          if (!videoRef.current) return;
-          results = await analyzeVideoWithGemini(
-            videoRef.current,
-            {
-              sampleIntervalSec: intervalMap[sampleSpeed],
-              minConfidence,
-              existingMemberNames: existingNames,
-              enableDualPass,
-              onProgress: (p) => {
-                const mappedStatus =
-                  p.status === 'completed' ? 'completed'
-                  : p.status === 'error' ? 'error'
-                  : p.status === 'idle' ? 'idle'
-                  : 'processing';
-                setProgressInfo({
-                  status: mappedStatus,
-                  currentFrame: p.currentFrame,
-                  totalFrames: p.totalFrames,
-                  currentTimeSec: p.currentTimeSec,
-                  durationSec: p.durationSec,
-                  percent: p.percent,
-                  message: p.message,
-                  detectedCount: p.detectedCount,
-                });
+        try {
+          if (fileType === 'video') {
+            const vid = await resolveVideoElement();
+            results = await analyzeVideoWithGemini(
+              vid,
+              {
+                sampleIntervalSec: intervalMap[sampleSpeed],
+                minConfidence,
+                existingMemberNames: existingNames,
+                enableDualPass,
+                onProgress: (p) => {
+                  const mappedStatus =
+                    p.status === 'completed' ? 'completed'
+                    : p.status === 'error' ? 'error'
+                    : p.status === 'idle' ? 'idle'
+                    : 'processing';
+                  setProgressInfo({
+                    status: mappedStatus,
+                    currentFrame: p.currentFrame,
+                    totalFrames: p.totalFrames,
+                    currentTimeSec: p.currentTimeSec,
+                    durationSec: p.durationSec,
+                    percent: p.percent,
+                    message: p.message,
+                    detectedCount: p.detectedCount,
+                  });
+                },
               },
-            },
-            cancelSignalRef.current
-          );
-        } else if (fileType === 'image') {
-          results = await analyzeImageWithGemini(
-            uploadedFile,
-            {
-              existingMemberNames: existingNames,
-              minConfidence,
-              enableDualPass,
-              onProgress: (p) => {
-                const mappedStatus =
-                  p.status === 'completed' ? 'completed'
-                  : p.status === 'error' ? 'error'
-                  : p.status === 'idle' ? 'idle'
-                  : 'processing';
-                setProgressInfo({
-                  status: mappedStatus,
-                  currentFrame: p.currentFrame,
-                  totalFrames: p.totalFrames,
-                  currentTimeSec: p.currentTimeSec,
-                  durationSec: p.durationSec,
-                  percent: p.percent,
-                  message: p.message,
-                  detectedCount: p.detectedCount,
-                });
+              cancelSignalRef.current
+            );
+          } else if (fileType === 'image') {
+            results = await analyzeImageWithGemini(
+              uploadedFile,
+              {
+                existingMemberNames: existingNames,
+                minConfidence,
+                enableDualPass,
+                onProgress: (p) => {
+                  const mappedStatus =
+                    p.status === 'completed' ? 'completed'
+                    : p.status === 'error' ? 'error'
+                    : p.status === 'idle' ? 'idle'
+                    : 'processing';
+                  setProgressInfo({
+                    status: mappedStatus,
+                    currentFrame: p.currentFrame,
+                    totalFrames: p.totalFrames,
+                    currentTimeSec: p.currentTimeSec,
+                    durationSec: p.durationSec,
+                    percent: p.percent,
+                    message: p.message,
+                    detectedCount: p.detectedCount,
+                  });
+                },
               },
-            },
-            cancelSignalRef.current
-          );
+              cancelSignalRef.current
+            );
+          }
+        } catch (aiErr: any) {
+          console.warn('[Scan] Gemini Vision fallback trigger:', aiErr?.message || aiErr);
+          
+          if (cancelSignalRef.current.isCancelled) return;
+
+          setProgressInfo((prev) => ({
+            ...prev,
+            status: 'processing',
+            message: 'Gemini AI belum aktif/merespon. Mengalihkan scan otomatis ke Mesin OCR Presisi bawaan...',
+          }));
+
+          // Seamless fallback to client OCR so user never gets stuck
+          if (fileType === 'video') {
+            const vid = await resolveVideoElement();
+            results = await processVideoDonations(
+              vid,
+              {
+                sampleIntervalSec: intervalMap[sampleSpeed],
+                minConfidence,
+                preprocessOptions: {
+                  grayscale: true,
+                  contrastStretch: true,
+                  sharpen: true,
+                },
+                existingMemberNames: existingNames,
+                onProgress: (info) => setProgressInfo(info),
+              },
+              cancelSignalRef.current
+            );
+          } else if (fileType === 'image') {
+            const img = await resolveImageElement();
+            results = await processImageDonations(
+              img,
+              {
+                sampleIntervalSec: 1,
+                minConfidence,
+                preprocessOptions: {
+                  grayscale: true,
+                  contrastStretch: true,
+                  sharpen: true,
+                },
+                existingMemberNames: existingNames,
+                onProgress: (info) => setProgressInfo(info),
+              },
+              cancelSignalRef.current
+            );
+          }
         }
       } else {
         // Fallback OCR Engine
         if (fileType === 'video') {
-          if (!videoRef.current) return;
+          const vid = await resolveVideoElement();
           results = await processVideoDonations(
-            videoRef.current,
+            vid,
             {
               sampleIntervalSec: intervalMap[sampleSpeed],
               minConfidence,
@@ -448,9 +519,9 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
             cancelSignalRef.current
           );
         } else if (fileType === 'image') {
-          if (!imageRef.current) return;
+          const img = await resolveImageElement();
           results = await processImageDonations(
-            imageRef.current,
+            img,
             {
               sampleIntervalSec: 1,
               minConfidence,
@@ -1163,7 +1234,6 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                       ref={videoRef}
                       src={fileUrl}
                       preload="auto"
-                      crossOrigin="anonymous"
                       onLoadedMetadata={handleLoadedMetadata}
                       onLoadedData={handleLoadedMetadata}
                       onDurationChange={handleLoadedMetadata}
@@ -1199,7 +1269,6 @@ export const FileUploadOcr: React.FC<FileUploadOcrProps> = ({ setActiveTab }) =>
                   <img
                     ref={imageRef}
                     src={fileUrl}
-                    crossOrigin="anonymous"
                     alt="Pratinjau Donasi Gems"
                     onError={() => {
                       console.warn('Image load event error');

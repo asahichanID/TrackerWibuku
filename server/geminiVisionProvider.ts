@@ -44,13 +44,15 @@ export interface GeminiVisionProviderInterface {
 export class GeminiVisionProvider implements GeminiVisionProviderInterface {
   public name = "Gemini Vision Scraper Provider (Autonomous 99% Dual-Pass)";
   private client: GoogleGenAI | null = null;
+  private currentApiKey: string = "";
 
   constructor() {
     this.initClient();
   }
 
   private initClient() {
-    const apiKey = process.env.GEMINI_API_KEY || "";
+    const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+    this.currentApiKey = apiKey;
     if (apiKey) {
       try {
         this.client = new GoogleGenAI({
@@ -64,6 +66,8 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
       } catch (err) {
         console.error("[GeminiVisionProvider] Initialization error:", err);
       }
+    } else {
+      this.client = null;
     }
   }
 
@@ -86,10 +90,14 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
    * Helper to execute Gemini generation with automatic failover and jittered backoff
    */
   private async executeGenerate(prompt: string, cleanBase64: string, resolvedMime: string): Promise<{ text: string; model: string }> {
-    if (!this.client) this.initClient();
+    const currentEnvKey = (process.env.GEMINI_API_KEY || "").trim();
+    if (!this.client || this.currentApiKey !== currentEnvKey) {
+      this.initClient();
+    }
     
     // Multi-model failover hierarchy with prioritized production-ready models
     const candidateModels = [
+      "gemini-2.5-flash",
       "gemini-flash-latest",
       "gemini-3.8-flash",
       "gemini-3.1-flash-lite",
@@ -142,7 +150,7 @@ export class GeminiVisionProvider implements GeminiVisionProviderInterface {
 
     const failureReason = isHighDemand
       ? "Layanan Gemini Vision sedang mengalami lonjakan beban sesaat. Silakan coba kembali sesaat lagi atau gunakan mode Mesin OCR Presisi."
-      : (!process.env.GEMINI_API_KEY ? "GEMINI_API_KEY belum terkonfigurasi di server." : "Semua model Gemini Vision sedang sibuk. Silakan coba sesaat lagi.");
+      : (!process.env.GEMINI_API_KEY ? "GEMINI_API_KEY belum terkonfigurasi di server." : `Gagal menghubungi Gemini Vision: ${lastError?.message || "Semua model sibuk"}`);
 
     throw new Error(failureReason);
   }
