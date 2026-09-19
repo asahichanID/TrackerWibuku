@@ -9,15 +9,27 @@ export function createApiApp() {
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
-  // API Health Check
-  app.get("/api/health", (_req: Request, res: Response) => {
+  // URL normalization for serverless environments (e.g. Vercel) where /api prefix might be stripped or retained
+  app.use((req, _res, next) => {
+    if (req.url && !req.url.startsWith("/api")) {
+      req.url = `/api${req.url.startsWith("/") ? "" : "/"}${req.url}`;
+    }
+    next();
+  });
+
+  // API Health Check & Root Handlers
+  const healthHandler = (_req: Request, res: Response) => {
     res.json({
       status: "ok",
       provider: defaultGeminiVisionProvider.name,
       timestamp: new Date().toISOString(),
       activeJobsCount: serverJobQueue.getJobs().filter((j) => j.status === "processing" || j.status === "queued" || j.status === "verifying").length,
     });
-  });
+  };
+
+  app.get("/api/health", healthHandler);
+  app.get("/api", healthHandler);
+  app.get("/api/", healthHandler);
 
   // ==========================================
   // BACKGROUND JOB MANAGEMENT ENDPOINTS
